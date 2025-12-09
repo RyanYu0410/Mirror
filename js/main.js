@@ -501,9 +501,13 @@ function render(p, time) {
     */
     
     // ==========================================
-    // Draw to main canvas
+    // Draw to main canvas (mirrored for true mirror effect)
     // ==========================================
+    p.drawingContext.save();
+    p.drawingContext.translate(w, 0);
+    p.drawingContext.scale(-1, 1);
     p.drawingContext.drawImage(compositeCanvas, 0, 0);
+    p.drawingContext.restore();
 }
 
 // ==========================================
