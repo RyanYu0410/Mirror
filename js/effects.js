@@ -1,0 +1,621 @@
+/**
+ * Soft Mirror - Visual Effects Module
+ * Handles glitch, glow, chromatic aberration, and other effects
+ */
+
+const Effects = (function() {
+    'use strict';
+
+    // ==========================================
+    // Configuration
+    // ==========================================
+    
+    const CONFIG = {
+        glitch: {
+            enabled: true,
+            intensity: 0.3,
+            sliceCount: 8,
+            maxOffset: 20,
+            colorSplit: 5,
+            triggerChance: 0.02,
+            duration: 100 // ms
+        },
+        chromatic: {
+            enabled: true,
+            offset: 3,
+            opacity: 0.5
+        },
+        bloom: {
+            enabled: false, // Disabled for performance
+            intensity: 0.3,
+            threshold: 200,
+            radius: 15
+        },
+        glow: {
+            outlineWidth: 3,
+            outlineBlur: 15,
+            colors: {
+                effect: ['#e8c4a0', '#d4a0a8', '#a0c4d4'],
+                calm: ['#e8c4a0', '#d4a574', '#e0a890']
+            }
+        },
+        vignette: {
+            enabled: true,
+            intensity: 0.4,
+            radius: 0.7
+        },
+        noise: {
+            enabled: false, // Disabled for performance
+            intensity: 0.02,
+            animated: false
+        }
+    };
+
+    // ==========================================
+    // State
+    // ==========================================
+    
+    let glitchActive = false;
+    let glitchEndTime = 0;
+    let currentMode = 'effect';
+    
+    // Offscreen canvases for effects
+    let glitchCanvas = null;
+    let glitchCtx = null;
+    let bloomCanvas = null;
+    let bloomCtx = null;
+
+    // ==========================================
+    // Initialization
+    // ==========================================
+    
+    function init(width, height) {
+        glitchCanvas = Utils.createOffscreenCanvas(width, height);
+        glitchCtx = glitchCanvas.getContext('2d');
+        
+        bloomCanvas = Utils.createOffscreenCanvas(width, height);
+        bloomCtx = bloomCanvas.getContext('2d');
+    }
+
+    function resize(width, height) {
+        if (glitchCanvas) {
+            glitchCanvas.width = width;
+            glitchCanvas.height = height;
+        }
+        if (bloomCanvas) {
+            bloomCanvas.width = width;
+            bloomCanvas.height = height;
+        }
+    }
+
+    function setMode(mode) {
+        currentMode = mode;
+    }
+
+    // ==========================================
+    // Glitch Effect
+    // ==========================================
+    
+    function triggerGlitch(intensity = null) {
+        if (!CONFIG.glitch.enabled) return;
+        
+        glitchActive = true;
+        glitchEndTime = performance.now() + CONFIG.glitch.duration;
+        
+        if (intensity !== null) {
+            CONFIG.glitch.intensity = intensity;
+        }
+    }
+
+    function updateGlitch() {
+        if (glitchActive && performance.now() > glitchEndTime) {
+            glitchActive = false;
+        }
+        
+        // Random glitch trigger
+        if (!glitchActive && Math.random() < CONFIG.glitch.triggerChance) {
+            triggerGlitch();
+        }
+    }
+
+    function applyGlitch(ctx, sourceCanvas) {
+        if (!glitchActive || !CONFIG.glitch.enabled) {
+            ctx.drawImage(sourceCanvas, 0, 0);
+            return;
+        }
+        
+        const cfg = CONFIG.glitch;
+        const w = sourceCanvas.width;
+        const h = sourceCanvas.height;
+        
+        // Clear and copy source
+        glitchCtx.clearRect(0, 0, w, h);
+        glitchCtx.drawImage(sourceCanvas, 0, 0);
+        
+        // Create horizontal slices with offset
+        const sliceHeight = h / cfg.sliceCount;
+        
+        ctx.clearRect(0, 0, w, h);
+        
+        for (let i = 0; i < cfg.sliceCount; i++) {
+            const y = i * sliceHeight;
+            const offset = (Math.random() - 0.5) * cfg.maxOffset * cfg.intensity;
+            
+            // Occasional color channel split
+            if (Math.random() < 0.3) {
+                // Red channel offset
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.fillStyle = `rgba(255, 0, 0, ${cfg.intensity * 0.3})`;
+                ctx.drawImage(glitchCanvas, 0, y, w, sliceHeight, offset - cfg.colorSplit, y, w, sliceHeight);
+                
+                // Cyan channel offset
+                ctx.fillStyle = `rgba(0, 255, 255, ${cfg.intensity * 0.3})`;
+                ctx.drawImage(glitchCanvas, 0, y, w, sliceHeight, offset + cfg.colorSplit, y, w, sliceHeight);
+                
+                ctx.globalCompositeOperation = 'source-over';
+            }
+            
+            ctx.drawImage(glitchCanvas, 0, y, w, sliceHeight, offset, y, w, sliceHeight);
+        }
+        
+        // Add scan lines
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        for (let y = 0; y < h; y += 4) {
+            ctx.fillRect(0, y, w, 1);
+        }
+    }
+
+    // ==========================================
+    // Chromatic Aberration
+    // ==========================================
+    
+    function applyChromaticAberration(ctx, sourceCanvas, offsetOverride = null) {
+        if (!CONFIG.chromatic.enabled) return;
+        
+        const offset = offsetOverride || CONFIG.chromatic.offset;
+        const w = sourceCanvas.width;
+        const h = sourceCanvas.height;
+        
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = CONFIG.chromatic.opacity;
+        
+        // Red channel - offset left
+        ctx.drawImage(sourceCanvas, -offset, 0);
+        
+        // Blue channel - offset right  
+        ctx.drawImage(sourceCanvas, offset, 0);
+        
+        ctx.restore();
+    }
+
+    // ==========================================
+    // Bloom Effect
+    // ==========================================
+    
+    function applyBloom(ctx, sourceCanvas) {
+        if (!CONFIG.bloom.enabled) return;
+        
+        const cfg = CONFIG.bloom;
+        const w = bloomCanvas.width;
+        const h = bloomCanvas.height;
+        
+        // Extract bright areas
+        bloomCtx.clearRect(0, 0, w, h);
+        bloomCtx.drawImage(sourceCanvas, 0, 0);
+        
+        // Simple blur for bloom
+        bloomCtx.filter = `blur(${cfg.radius}px)`;
+        bloomCtx.drawImage(bloomCanvas, 0, 0);
+        bloomCtx.filter = 'none';
+        
+        // Blend with original
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = cfg.intensity;
+        ctx.drawImage(bloomCanvas, 0, 0);
+        ctx.restore();
+    }
+
+    // ==========================================
+    // Glow Outline
+    // ==========================================
+    
+    function drawGlowingOutline(ctx, contourPoints, time, options = {}) {
+        if (!contourPoints || contourPoints.length < 3) return;
+        
+        const {
+            width = CONFIG.glow.outlineWidth,
+            blur = CONFIG.glow.outlineBlur,
+            animated = true,
+            mode = currentMode,
+            mirror = true  // Mirror to match flipped video
+        } = options;
+        
+        const colors = CONFIG.glow.colors[mode] || CONFIG.glow.colors.effect;
+        const canvasWidth = ctx.canvas.width;
+        
+        // Mirror points if needed
+        const points = mirror ? contourPoints.map(p => ({
+            x: canvasWidth - p.x,
+            y: p.y
+        })) : contourPoints;
+        
+        ctx.save();
+        
+        // Multiple glow layers
+        for (let layer = 0; layer < 3; layer++) {
+            const layerBlur = blur * (1 + layer * 0.5);
+            const layerWidth = width + layer * 2;
+            const layerAlpha = 0.4 - layer * 0.1;
+            
+            // Animated color cycling
+            let colorIndex = layer;
+            if (animated) {
+                colorIndex = Math.floor((time * 0.001 + layer) % colors.length);
+            }
+            const color = colors[colorIndex];
+            
+            ctx.shadowColor = color;
+            ctx.shadowBlur = layerBlur;
+            ctx.strokeStyle = Utils.colorToString(color, layerAlpha);
+            ctx.lineWidth = layerWidth;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y);
+            
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x, points[i].y);
+            }
+            
+            ctx.closePath();
+            ctx.stroke();
+        }
+        
+        ctx.restore();
+    }
+
+    // ==========================================
+    // Vignette
+    // ==========================================
+    
+    function applyVignette(ctx, width, height) {
+        if (!CONFIG.vignette.enabled) return;
+        
+        const cfg = CONFIG.vignette;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const radius = Math.max(width, height) * cfg.radius;
+        
+        const gradient = ctx.createRadialGradient(
+            centerX, centerY, radius * 0.5,
+            centerX, centerY, radius
+        );
+        
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        gradient.addColorStop(0.5, `rgba(0, 0, 0, ${cfg.intensity * 0.3})`);
+        gradient.addColorStop(1, `rgba(0, 0, 0, ${cfg.intensity})`);
+        
+        ctx.save();
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+        ctx.restore();
+    }
+
+    // ==========================================
+    // Film Noise
+    // ==========================================
+    
+    function applyNoise(ctx, width, height, time) {
+        if (!CONFIG.noise.enabled) return;
+        
+        const cfg = CONFIG.noise;
+        const imageData = ctx.getImageData(0, 0, width, height);
+        const data = imageData.data;
+        
+        const noiseOffset = cfg.animated ? time * 0.1 : 0;
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const noise = (Math.random() - 0.5) * 255 * cfg.intensity;
+            data[i] += noise;     // R
+            data[i + 1] += noise; // G
+            data[i + 2] += noise; // B
+        }
+        
+        ctx.putImageData(imageData, 0, 0);
+    }
+
+    // ==========================================
+    // Drop Shadow for Human Figure
+    // ==========================================
+    
+    function applyDropShadow(ctx, mask, offsetX = 10, offsetY = 10, blur = 20, alpha = 0.3) {
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.filter = `blur(${blur}px)`;
+        ctx.drawImage(mask, offsetX, offsetY);
+        ctx.filter = 'none';
+        ctx.restore();
+    }
+
+    // ==========================================
+    // Black Fade Mask (around figure)
+    // ==========================================
+    
+    // Offscreen canvas for black mask
+    let blackMaskCanvas = null;
+    let blackMaskCtx = null;
+    
+    function initBlackMask(width, height) {
+        blackMaskCanvas = Utils.createOffscreenCanvas(width, height);
+        blackMaskCtx = blackMaskCanvas.getContext('2d');
+    }
+
+    // Draw encroaching darkness using the actual mask (not contour points)
+    function drawEncroachingDarkness(ctx, mask, width, height, options = {}) {
+        const {
+            darknessAmount = 50,
+            opacity = 0.98,
+            mirror = true  // Should match the human figure mirroring
+        } = options;
+        
+        // Initialize canvas if needed
+        if (!blackMaskCanvas || blackMaskCanvas.width !== width || blackMaskCanvas.height !== height) {
+            initBlackMask(width, height);
+        }
+        
+        // Clear
+        blackMaskCtx.clearRect(0, 0, width, height);
+        
+        // STEP 1: Fill everything with solid black
+        blackMaskCtx.fillStyle = `rgba(0, 0, 0, ${opacity})`;
+        blackMaskCtx.fillRect(0, 0, width, height);
+        
+        // STEP 2: If we have a mask, use it to cut out the person
+        if (mask) {
+            // The buffer shrinks as darkness grows
+            // Reduced max buffer for sharper edges
+            const maxBuffer = 30;  // Smaller = sharper edges
+            const buffer = Math.max(0, maxBuffer - darknessAmount * 0.3);
+            
+            blackMaskCtx.globalCompositeOperation = 'destination-out';
+            
+            blackMaskCtx.save();
+            
+            // Mirror the mask to match the mirrored human figure
+            // Human figure uses: translate(w, 0) + scale(-1, 1)
+            // We do the same for the mask cutout
+            if (mirror) {
+                blackMaskCtx.translate(width, 0);
+                blackMaskCtx.scale(-1, 1);
+            }
+            
+            // Apply minimal blur for sharper edges
+            if (buffer > 2) {
+                // blackMaskCtx.filter = `blur(${Math.min(buffer, 8)}px)`;  // DISABLED BLUR
+            }
+            
+            // Draw mask - white areas will be cut out
+            blackMaskCtx.drawImage(mask, 0, 0, width, height);
+            
+            blackMaskCtx.filter = 'none';
+            blackMaskCtx.restore();
+            
+            blackMaskCtx.globalCompositeOperation = 'source-over';
+        }
+        
+        // Draw to main context
+        ctx.drawImage(blackMaskCanvas, 0, 0);
+    }
+
+    function drawBlackFadeMask(ctx, contourPoints, width, height, options = {}) {
+        const {
+            shrinkAmount = 20,
+            opacity = 0.95,
+            mirror = true  // Mirror the contour to match flipped video
+        } = options;
+        
+        // Initialize black mask canvas if needed
+        if (!blackMaskCanvas || blackMaskCanvas.width !== width || blackMaskCanvas.height !== height) {
+            initBlackMask(width, height);
+        }
+        
+        // Clear black mask canvas
+        blackMaskCtx.clearRect(0, 0, width, height);
+        
+        // Fill with black
+        blackMaskCtx.fillStyle = `rgba(0, 0, 0, ${opacity})`;
+        blackMaskCtx.fillRect(0, 0, width, height);
+        
+        if (!contourPoints || contourPoints.length < 3) {
+            // No contour - just draw black overlay
+            ctx.drawImage(blackMaskCanvas, 0, 0);
+            return;
+        }
+        
+        // Mirror contour points if needed
+        const points = mirror ? contourPoints.map(p => ({
+            x: width - p.x,
+            y: p.y
+        })) : contourPoints;
+        
+        // Calculate center of contour
+        let centerX = 0, centerY = 0;
+        for (const p of points) {
+            centerX += p.x;
+            centerY += p.y;
+        }
+        centerX /= points.length;
+        centerY /= points.length;
+        
+        // Create shrunk contour path and cut it out from black
+        blackMaskCtx.globalCompositeOperation = 'destination-out';
+        blackMaskCtx.fillStyle = 'white';
+        blackMaskCtx.beginPath();
+        
+        let firstPoint = true;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            
+            // Vector from center to point
+            const dx = p.x - centerX;
+            const dy = p.y - centerY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            
+            if (dist < 1) continue;
+            
+            // Shrink toward center - larger shrinkAmount = more shrink
+            const shrinkRatio = Math.max(0.1, (dist - shrinkAmount) / dist);
+            const sx = centerX + dx * shrinkRatio;
+            const sy = centerY + dy * shrinkRatio;
+            
+            if (firstPoint) {
+                blackMaskCtx.moveTo(sx, sy);
+                firstPoint = false;
+            } else {
+                blackMaskCtx.lineTo(sx, sy);
+            }
+        }
+        blackMaskCtx.closePath();
+        blackMaskCtx.fill();
+        
+        // Reset composite operation
+        blackMaskCtx.globalCompositeOperation = 'source-over';
+        
+        // Draw the black mask onto main context
+        ctx.drawImage(blackMaskCanvas, 0, 0);
+    }
+
+    // ==========================================
+    // Multiple Outlines Effect
+    // ==========================================
+    
+    function drawMultipleOutlines(ctx, contourPoints, time, count = 3) {
+        if (!contourPoints || contourPoints.length < 3) return;
+        
+        const colors = CONFIG.glow.colors[currentMode];
+        
+        for (let i = 0; i < count; i++) {
+            const offset = (i + 1) * 8;
+            const alpha = 0.3 - i * 0.08;
+            const colorIndex = (Math.floor(time * 0.002) + i) % colors.length;
+            
+            ctx.save();
+            ctx.strokeStyle = Utils.colorToString(colors[colorIndex], alpha);
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 5]);
+            ctx.lineDashOffset = time * 0.05 + i * 10;
+            
+            ctx.beginPath();
+            
+            for (let j = 0; j < contourPoints.length; j++) {
+                const p = contourPoints[j];
+                
+                // Offset outward from center
+                const centerX = contourPoints.reduce((sum, pt) => sum + pt.x, 0) / contourPoints.length;
+                const centerY = contourPoints.reduce((sum, pt) => sum + pt.y, 0) / contourPoints.length;
+                
+                const dx = p.x - centerX;
+                const dy = p.y - centerY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                const nx = p.x + (dx / dist) * offset;
+                const ny = p.y + (dy / dist) * offset;
+                
+                if (j === 0) {
+                    ctx.moveTo(nx, ny);
+                } else {
+                    ctx.lineTo(nx, ny);
+                }
+            }
+            
+            ctx.closePath();
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    // ==========================================
+    // Update & Draw
+    // ==========================================
+    
+    function update(time) {
+        updateGlitch();
+    }
+
+    function applyAllEffects(ctx, sourceCanvas, options = {}) {
+        const {
+            glitch = true,
+            chromatic = true,
+            bloom = true,
+            vignette = true,
+            noise = false,
+            time = performance.now()
+        } = options;
+        
+        if (glitch && glitchActive) {
+            applyGlitch(ctx, sourceCanvas);
+        }
+        
+        if (chromatic) {
+            applyChromaticAberration(ctx, sourceCanvas);
+        }
+        
+        if (bloom) {
+            applyBloom(ctx, sourceCanvas);
+        }
+        
+        const w = sourceCanvas.width;
+        const h = sourceCanvas.height;
+        
+        if (vignette) {
+            applyVignette(ctx, w, h);
+        }
+        
+        if (noise) {
+            applyNoise(ctx, w, h, time);
+        }
+    }
+
+    // ==========================================
+    // Export
+    // ==========================================
+    
+    return {
+        init,
+        resize,
+        setMode,
+        update,
+        
+        // Individual effects
+        triggerGlitch,
+        applyGlitch,
+        applyChromaticAberration,
+        applyBloom,
+        applyVignette,
+        applyNoise,
+        applyDropShadow,
+        
+        // Contour effects
+        drawGlowingOutline,
+        drawBlackFadeMask,
+        drawEncroachingDarkness,
+        drawMultipleOutlines,
+        
+        // Combined
+        applyAllEffects,
+        
+        // Config
+        getConfig: () => CONFIG,
+        setGlitchIntensity: (i) => CONFIG.glitch.intensity = i,
+        setGlitchEnabled: (e) => CONFIG.glitch.enabled = e,
+        setChromaticEnabled: (e) => CONFIG.chromatic.enabled = e,
+        setBloomEnabled: (e) => CONFIG.bloom.enabled = e,
+        setVignetteEnabled: (e) => CONFIG.vignette.enabled = e
+    };
+})();
+
+window.Effects = Effects;
+

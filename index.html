@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soft Mirror - Interactive Art Installation</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css">
+    
+    <!-- p5.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    
+    <!-- MediaPipe -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+        <div class="loading-content">
+            <h1 class="loading-title">Soft Mirror</h1>
+            <p class="loading-subtitle">Preparing your reflection...</p>
+            <div class="loading-bar-container">
+                <div class="loading-bar" id="loading-bar"></div>
+            </div>
+            <p class="loading-status" id="loading-status">Initializing camera...</p>
+        </div>
+    </div>
+    
+    <!-- Instructions Overlay -->
+    <div id="instructions" class="hidden">
+        <div class="instructions-content">
+            <p>Move your hands slowly to reveal hidden words</p>
+            <p class="instructions-hint">Step into the frame</p>
+        </div>
+    </div>
+    
+    <!-- Canvas Container -->
+    <div id="canvas-container"></div>
+    
+    <!-- Mode Indicator -->
+    <div id="mode-indicator" class="hidden">
+        <span id="mode-text">EFFECT MODE</span>
+    </div>
+    
+    <!-- Debug Panel (hidden by default) -->
+    <div id="debug-panel" class="hidden">
+        <div id="fps-counter">FPS: --</div>
+        <div id="state-info">State: --</div>
+        <div id="hand-velocity">Hand Velocity: --</div>
+    </div>
+    
+    <!-- Error Screen -->
+    <div id="error-screen" class="hidden">
+        <div class="error-content">
+            <h2>Camera Access Required</h2>
+            <p>Please allow camera access to experience the mirror.</p>
+            <button id="retry-btn">Try Again</button>
+        </div>
+    </div>
+    
+    <!-- Scripts -->
+    <script src="js/utils.js"></script>
+    <script src="js/segmentation.js"></script>
+    <script src="js/particles.js"></script>
+    <script src="js/effects.js"></script>
+    <script src="js/text-system.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
+

@@ -1,0 +1,301 @@
+/* ==========================================
+   Soft Mirror - Interactive Art Installation
+   ========================================== */
+
+:root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --text-primary: #f4f0e8;
+    --text-secondary: #a8a4a0;
+    --accent-warm: #e8c4a0;
+    --accent-gold: #d4a574;
+    --accent-rose: #d4a0a8;
+    --accent-cool: #a0c4d4;
+    --glow-primary: rgba(232, 196, 160, 0.6);
+    --glow-secondary: rgba(212, 160, 168, 0.4);
+    --font-display: 'Cormorant Garamond', Georgia, serif;
+    --font-mono: 'Space Mono', monospace;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg-primary);
+    font-family: var(--font-display);
+    color: var(--text-primary);
+}
+
+/* Canvas Container */
+#canvas-container {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+}
+
+#canvas-container canvas {
+    display: block;
+}
+
+/* Loading Screen */
+#loading-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    transition: opacity 0.8s ease-out, visibility 0.8s;
+}
+
+#loading-screen.fade-out {
+    opacity: 0;
+    visibility: hidden;
+}
+
+.loading-content {
+    text-align: center;
+    max-width: 400px;
+    padding: 2rem;
+}
+
+.loading-title {
+    font-size: 3.5rem;
+    font-weight: 300;
+    letter-spacing: 0.3em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+    margin-bottom: 1rem;
+    text-shadow: 0 0 40px var(--glow-primary);
+    animation: titlePulse 3s ease-in-out infinite;
+}
+
+@keyframes titlePulse {
+    0%, 100% { opacity: 0.8; }
+    50% { opacity: 1; }
+}
+
+.loading-subtitle {
+    font-size: 1rem;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--text-secondary);
+    margin-bottom: 2.5rem;
+    letter-spacing: 0.1em;
+}
+
+.loading-bar-container {
+    width: 200px;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: 0 auto 1.5rem;
+    border-radius: 1px;
+    overflow: hidden;
+}
+
+.loading-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-warm), var(--accent-rose));
+    transition: width 0.3s ease-out;
+    box-shadow: 0 0 10px var(--glow-primary);
+}
+
+.loading-status {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    letter-spacing: 0.05em;
+    opacity: 0.7;
+}
+
+/* Instructions Overlay */
+#instructions {
+    position: fixed;
+    bottom: 5%;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    text-align: center;
+    pointer-events: none;
+    animation: fadeInUp 1s ease-out 0.5s both;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+.instructions-content {
+    background: rgba(10, 10, 15, 0.7);
+    backdrop-filter: blur(10px);
+    padding: 1.5rem 2.5rem;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.instructions-content p {
+    font-size: 1.1rem;
+    font-weight: 300;
+    letter-spacing: 0.08em;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.instructions-hint {
+    font-size: 0.85rem !important;
+    font-style: italic;
+    color: var(--text-secondary) !important;
+    opacity: 0.7;
+}
+
+/* Mode Indicator */
+#mode-indicator {
+    position: fixed;
+    top: 2rem;
+    right: 2rem;
+    z-index: 100;
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    letter-spacing: 0.2em;
+    color: var(--text-secondary);
+    opacity: 0.5;
+    transition: opacity 0.3s;
+}
+
+#mode-indicator:hover {
+    opacity: 1;
+}
+
+/* Debug Panel */
+#debug-panel {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 200;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--accent-cool);
+    background: rgba(0, 0, 0, 0.8);
+    padding: 1rem;
+    border-radius: 4px;
+    line-height: 1.8;
+}
+
+#debug-panel > div {
+    margin-bottom: 0.3rem;
+}
+
+/* Error Screen */
+#error-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: var(--bg-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.error-content {
+    text-align: center;
+    padding: 2rem;
+}
+
+.error-content h2 {
+    font-size: 1.8rem;
+    font-weight: 400;
+    margin-bottom: 1rem;
+    color: var(--accent-rose);
+}
+
+.error-content p {
+    color: var(--text-secondary);
+    margin-bottom: 2rem;
+    font-size: 1rem;
+}
+
+#retry-btn {
+    background: transparent;
+    border: 1px solid var(--accent-warm);
+    color: var(--accent-warm);
+    padding: 0.8rem 2rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+#retry-btn:hover {
+    background: var(--accent-warm);
+    color: var(--bg-primary);
+}
+
+/* Utility Classes */
+.hidden {
+    display: none !important;
+}
+
+.fade-in {
+    animation: fadeIn 0.5s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .loading-title {
+        font-size: 2.5rem;
+        letter-spacing: 0.2em;
+    }
+    
+    .instructions-content {
+        padding: 1rem 1.5rem;
+    }
+    
+    .instructions-content p {
+        font-size: 0.95rem;
+    }
+}
+
+/* Custom Scrollbar (if needed) */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--accent-warm);
+    border-radius: 3px;
+}
+
