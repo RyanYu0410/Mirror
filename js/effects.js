@@ -72,9 +72,13 @@ const Effects = (function() {
     function init(width, height) {
         glitchCanvas = Utils.createOffscreenCanvas(width, height);
         glitchCtx = glitchCanvas.getContext('2d');
-        
+
         bloomCanvas = Utils.createOffscreenCanvas(width, height);
         bloomCtx = bloomCanvas.getContext('2d');
+
+        // Initialize background trail canvas
+        backgroundTrailCanvas = Utils.createOffscreenCanvas(width, height);
+        backgroundTrailCtx = backgroundTrailCanvas.getContext('2d');
     }
 
     function resize(width, height) {
@@ -85,6 +89,10 @@ const Effects = (function() {
         if (bloomCanvas) {
             bloomCanvas.width = width;
             bloomCanvas.height = height;
+        }
+        if (backgroundTrailCanvas) {
+            backgroundTrailCanvas.width = width;
+            backgroundTrailCanvas.height = height;
         }
     }
 
@@ -341,73 +349,203 @@ const Effects = (function() {
     }
 
     // ==========================================
-    // Black Fade Mask (around figure)
+    // Black Background & Contour Trailing
     // ==========================================
-    
+
     // Offscreen canvas for black mask
     let blackMaskCanvas = null;
     let blackMaskCtx = null;
-    
+
+    // Background trail for motion blur effect
+    let backgroundTrail = [];
+    const maxBackgroundTrailLength = 8; // Number of background frames to keep
+    const backgroundTrailFadeSpeed = 0.85; // How quickly background trails fade
+
+    // Offscreen canvas for background trail
+    let backgroundTrailCanvas = null;
+    let backgroundTrailCtx = null;
+
     function initBlackMask(width, height) {
         blackMaskCanvas = Utils.createOffscreenCanvas(width, height);
         blackMaskCtx = blackMaskCanvas.getContext('2d');
     }
 
-    // Draw encroaching darkness using the actual mask (not contour points)
-    function drawEncroachingDarkness(ctx, mask, width, height, options = {}) {
+    // Draw solid black background using the actual mask (not contour points)
+    function drawBlackBackground(ctx, mask, width, height, options = {}) {
         const {
-            darknessAmount = 50,
-            opacity = 0.98,
+            opacity = 1.0,
             mirror = true  // Should match the human figure mirroring
         } = options;
-        
+
         // Initialize canvas if needed
         if (!blackMaskCanvas || blackMaskCanvas.width !== width || blackMaskCanvas.height !== height) {
             initBlackMask(width, height);
         }
-        
+
         // Clear
         blackMaskCtx.clearRect(0, 0, width, height);
-        
-        // STEP 1: Fill everything with solid black
+
+        // Fill everything with solid black
         blackMaskCtx.fillStyle = `rgba(0, 0, 0, ${opacity})`;
         blackMaskCtx.fillRect(0, 0, width, height);
-        
-        // STEP 2: If we have a mask, use it to cut out the person
+
+        // If we have a mask, cut out the person area
         if (mask) {
-            // The buffer shrinks as darkness grows
-            // Reduced max buffer for sharper edges
-            const maxBuffer = 30;  // Smaller = sharper edges
-            const buffer = Math.max(0, maxBuffer - darknessAmount * 0.3);
-            
             blackMaskCtx.globalCompositeOperation = 'destination-out';
-            
+
             blackMaskCtx.save();
-            
+
             // Mirror the mask to match the mirrored human figure
-            // Human figure uses: translate(w, 0) + scale(-1, 1)
-            // We do the same for the mask cutout
             if (mirror) {
                 blackMaskCtx.translate(width, 0);
                 blackMaskCtx.scale(-1, 1);
             }
-            
-            // Apply minimal blur for sharper edges
-            if (buffer > 2) {
-                // blackMaskCtx.filter = `blur(${Math.min(buffer, 8)}px)`;  // DISABLED BLUR
-            }
-            
-            // Draw mask - white areas will be cut out
+
+            // Draw mask - white areas will be cut out, leaving black background
             blackMaskCtx.drawImage(mask, 0, 0, width, height);
-            
-            blackMaskCtx.filter = 'none';
+
             blackMaskCtx.restore();
-            
             blackMaskCtx.globalCompositeOperation = 'source-over';
         }
-        
+
         // Draw to main context
         ctx.drawImage(blackMaskCanvas, 0, 0);
+    }
+
+    // Update background trail for motion blur effect
+    function updateBackgroundTrail(sourceCanvas) {
+        if (!sourceCanvas) return;
+
+        // Capture current frame from source canvas (which should be pure human figure with transparent bg)
+        // Clear background trail canvas first
+        backgroundTrailCtx.clearRect(0, 0, backgroundTrailCanvas.width, backgroundTrailCanvas.height);
+        
+        // Draw the source image
+        backgroundTrailCtx.drawImage(sourceCanvas, 0, 0);
+
+        // Add current frame to trail
+        backgroundTrail.unshift({
+            imageData: backgroundTrailCtx.getImageData(0, 0, backgroundTrailCanvas.width, backgroundTrailCanvas.height),
+            alpha: 1.0
+        });
+
+        // Limit trail length
+        if (backgroundTrail.length > maxBackgroundTrailLength) {
+            backgroundTrail.pop();
+        }
+
+        // Fade existing trails
+        for (let i = 1; i < backgroundTrail.length; i++) {
+            backgroundTrail[i].alpha *= backgroundTrailFadeSpeed;
+        }
+    }
+
+    // Update contour trail for trailing effect (keeping for compatibility)
+    function updateContourTrail(contourPoints) {
+        if (!contourPoints || contourPoints.length < 3) return;
+
+        // Add current contour to trail
+        contourTrail.unshift({
+            points: [...contourPoints],
+            alpha: 1.0
+        });
+
+        // Limit trail length
+        if (contourTrail.length > maxTrailLength) {
+            contourTrail.pop();
+        }
+
+        // Fade existing trails
+        for (let i = 1; i < contourTrail.length; i++) {
+            contourTrail[i].alpha *= trailFadeSpeed;
+        }
+    }
+
+    // Draw background motion blur trails
+    function drawBackgroundTrail(ctx) {
+        if (backgroundTrail.length === 0) return;
+
+        ctx.save();
+        
+        // Standard blend mode - trails have transparent backgrounds
+        ctx.globalCompositeOperation = 'source-over';
+
+        // Draw trails from oldest to newest (back to front)
+        for (let trailIndex = backgroundTrail.length - 1; trailIndex >= 0; trailIndex--) {
+            const trail = backgroundTrail[trailIndex];
+            if (trail.alpha < 0.05) continue; // Skip very faded trails
+
+            // Create temporary canvas for this trail frame
+            const tempCanvas = Utils.createOffscreenCanvas(ctx.canvas.width, ctx.canvas.height);
+            const tempCtx = tempCanvas.getContext('2d');
+
+            // Put the stored image data onto temp canvas
+            tempCtx.putImageData(trail.imageData, 0, 0);
+
+            // Draw with appropriate alpha
+            ctx.globalAlpha = trail.alpha * 0.4; // Trails
+            ctx.drawImage(tempCanvas, 0, 0);
+        }
+
+        ctx.restore();
+    }
+
+    // Draw contour trailing effect with black outlines
+    function drawContourTrail(ctx, time, options = {}) {
+        if (contourTrail.length === 0) return;
+
+        const {
+            mirror = true
+        } = options;
+
+        const canvasWidth = ctx.canvas.width;
+
+        ctx.save();
+
+        // Draw trails from oldest to newest (back to front)
+        for (let trailIndex = contourTrail.length - 1; trailIndex >= 0; trailIndex--) {
+            const trail = contourTrail[trailIndex];
+            if (trail.alpha < 0.05) continue; // Skip very faded trails
+
+            const points = mirror ? trail.points.map(p => ({
+                x: canvasWidth - p.x,
+                y: p.y
+            })) : trail.points;
+
+            // Calculate trail-specific properties for smooth motion blur
+            const trailProgress = trailIndex / (contourTrail.length - 1); // 0 = oldest, 1 = newest
+            const alpha = trail.alpha * (0.2 + trailProgress * 0.8); // Gradual fade from old to new
+            const blur = 8 + trailIndex * 1.5; // Subtle blur increase for older trails
+            const width = CONFIG.glow.outlineWidth * (0.6 + trailProgress * 0.8); // Smooth width transition
+
+            // Use black color for all contours
+            const color = '#000000';
+
+            // Multiple layers for depth with black outlines
+            for (let layer = 0; layer < 3; layer++) {
+                const layerBlur = blur * (1 + layer * 0.5);
+                const layerAlpha = alpha * (0.9 - layer * 0.2);
+
+                ctx.shadowColor = color;
+                ctx.shadowBlur = layerBlur;
+                ctx.strokeStyle = Utils.colorToString(color, layerAlpha);
+                ctx.lineWidth = width + layer * 0.5;
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+
+                for (let i = 1; i < points.length; i++) {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
+
+                ctx.closePath();
+                ctx.stroke();
+            }
+        }
+
+        ctx.restore();
     }
 
     function drawBlackFadeMask(ctx, contourPoints, width, height, options = {}) {
@@ -601,8 +739,14 @@ const Effects = (function() {
         // Contour effects
         drawGlowingOutline,
         drawBlackFadeMask,
-        drawEncroachingDarkness,
+        drawBlackBackground,
+        drawContourTrail,
+        updateContourTrail,
         drawMultipleOutlines,
+
+        // Background trail effects
+        updateBackgroundTrail,
+        drawBackgroundTrail,
         
         // Combined
         applyAllEffects,
@@ -618,4 +762,5 @@ const Effects = (function() {
 })();
 
 window.Effects = Effects;
+
 

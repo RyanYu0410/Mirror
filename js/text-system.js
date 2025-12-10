@@ -12,24 +12,24 @@ const TextSystem = (function() {
     
     const CONFIG = {
         trigger: {
-            velocityThreshold: 12, // pixels per frame to trigger text
-            cooldown: 800, // ms between triggers
-            maxActive: 15 // maximum active text particles
+            velocityThreshold: 5, 
+            cooldown: 200, // Slightly longer cooldown so screen doesn't fill too fast with slow-fading text
+            maxActive: 35 
         },
         text: {
-            fontSize: { min: 14, max: 28 },
-            opacity: { start: 0, peak: 0.9, end: 0 },
-            lifetime: { min: 3000, max: 6000 }, // ms
-            fadeIn: 500, // ms
-            fadeOut: 1000, // ms
-            driftSpeed: 0.3, // pixels per frame
-            driftAngle: Math.PI / 4, // radians, outward drift
+            fontSize: { min: 24, max: 48 }, // Larger text
+            opacity: { start: 0, peak: 0.95, end: 0 },
+            lifetime: { min: 4000, max: 6000 }, // Longer lifetime to allow slow fade in (was 1500-2500)
+            fadeIn: 2000, // Very slow fade in (was 400)
+            fadeOut: 1500, // Slow fade out (was 600)
+            driftSpeed: 0.15, // Slower drift for elegance
+            driftAngle: Math.PI / 4, 
             fontFamily: "'Cormorant Garamond', Georgia, serif"
         },
         collision: {
             enabled: true,
-            minDistance: 80, // minimum distance between text centers
-            repulsionStrength: 0.5
+            minDistance: 70, // Increased distance for bigger text (was 50)
+            repulsionStrength: 0.4 // Slightly stronger repulsion
         },
         colors: {
             normal: ['#f4f0e8', '#e8c4a0', '#d4a574'],
@@ -42,65 +42,37 @@ const TextSystem = (function() {
     // ==========================================
     
     const COMFORT_PHRASES = [
-        // Self-acceptance
-        "You are enough",
-        "Breathe deeply",
-        "This moment is yours",
-        "You are worthy",
-        "Be gentle with yourself",
-        "You are seen",
-        "Rest is productive",
+        // Short, gentle, inclusive phrases (max ~2 words)
+        "You exist",
+        "Be gentle",
+        "Breathe",
+        "It's okay",
         "You matter",
-        "Trust the process",
-        "You are healing",
-        
-        // Encouragement
+        "Stay soft",
         "Keep going",
-        "You've got this",
-        "One step at a time",
-        "Progress, not perfection",
-        "You are growing",
-        "Embrace change",
-        "Feel your strength",
-        "You are resilient",
-        "Your best is enough",
-        "You are capable",
-        
-        // Peace
-        "Let it go",
-        "Be present",
-        "Find your calm",
+        "Here now",
+        "You're safe",
+        "Enough",
+        "Trust yourself",
         "Slow down",
+        "Feel",
+        "Release",
+        "Love you",
+        "Be free",
+        "Shine on",
         "Just be",
-        "Peace is within",
-        "Release tension",
-        "Allow softness",
-        "Breathe in peace",
-        "Let yourself rest",
-        
-        // Hope
-        "Tomorrow is new",
-        "Light will come",
-        "You are becoming",
-        "Hope remains",
-        "Joy awaits",
-        "New beginnings",
-        "The storm will pass",
-        "Dawn approaches",
-        "Beauty surrounds you",
-        "Grace finds you",
-        
-        // Self-love
-        "Love yourself first",
-        "You deserve kindness",
-        "Honor your journey",
-        "Celebrate you",
-        "You are beautiful",
-        "Embrace imperfection",
-        "You are whole",
-        "Nurture yourself",
-        "You are precious",
-        "Accept yourself"
+        "You glow",
+        "Peace",
+        "Grace",
+        "Hope",
+        "Dream",
+        "Rest",
+        "Heal",
+        "Grow",
+        "Bloom",
+        "Flow",
+        "Rise",
+        "Connect"
     ];
 
     // ==========================================
@@ -398,9 +370,18 @@ const TextSystem = (function() {
             return false;
         }
         
+        // AUTOMATIC TRIGGER: Even without movement, sometimes trigger text
+        const autoTriggerChance = 0.05; // 5% chance per frame
+        let isAutoTrigger = false;
+        
         // Check velocity threshold
         if (handVelocity.max < CONFIG.trigger.velocityThreshold) {
-            return false;
+            // If hand is slow, check for random auto-trigger
+            if (Math.random() < autoTriggerChance) {
+                isAutoTrigger = true;
+            } else {
+                return false;
+            }
         }
         
         // Check max active
@@ -408,15 +389,23 @@ const TextSystem = (function() {
             return false;
         }
         
-        // Determine which hand triggered
-        const activeHand = handVelocity.left > handVelocity.right ? 
-            (bodyParts.leftWrist || bodyParts.leftHand) :
-            (bodyParts.rightWrist || bodyParts.rightHand);
+        let position = null;
         
-        if (!activeHand) return false;
+        // 1. Try triggering near active hand
+        if (!isAutoTrigger) {
+            const activeHand = handVelocity.left > handVelocity.right ? 
+                (bodyParts.leftWrist || bodyParts.leftHand) :
+                (bodyParts.rightWrist || bodyParts.rightHand);
+            
+            if (activeHand) {
+                position = getRandomContourPosition(contour, activeHand);
+            }
+        }
         
-        // Get position near hand on contour
-        const position = getRandomContourPosition(contour, activeHand);
+        // 2. If no hand position found or auto-trigger, pick RANDOM contour point
+        if (!position) {
+            position = getRandomContourPosition(contour);
+        }
         
         if (!position) return false;
         

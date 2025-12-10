@@ -3,8 +3,8 @@
    ========================================== */
 
 :root {
-    --bg-primary: #0a0a0f;
-    --bg-secondary: #12121a;
+    --bg-primary: #000000;
+    --bg-secondary: #000000;
     --text-primary: #f4f0e8;
     --text-secondary: #a8a4a0;
     --accent-warm: #e8c4a0;
@@ -170,6 +170,7 @@ html, body {
 
 /* Mode Indicator */
 #mode-indicator {
+    display: none !important; /* Hidden per user request */
     position: fixed;
     top: 2rem;
     right: 2rem;
@@ -188,6 +189,7 @@ html, body {
 
 /* Debug Panel */
 #debug-panel {
+    display: none !important; /* Hidden per user request */
     position: fixed;
     top: 1rem;
     left: 1rem;

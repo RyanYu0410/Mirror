@@ -20,16 +20,26 @@ const AppConfig = {
         mirrorDuration: 30000
     },
     darkness: {
-        baseAmount: 0,      // 起始值
+        baseAmount: 100,      // 起始值 - Start fully dark for immediate mask
         maxAmount: 150,     // 最大值（达到后人物周围没有buffer）
-        growSpeed: 0.3,     // 黑暗生长速度（像素/帧）
-        currentAmount: 0,   // 当前值
+        growSpeed: 0.0,     // 黑暗生长速度（像素/帧）- Static mask
+        currentAmount: 100,   // 当前值
         mirrorMask: true    // 默认开启
     },
     // Mirror controls (tested)
     mirror: {
         video: false,   // 不翻转摄像头画面（已测试正确）
         mask: true
+    },
+    // Visual Smoothing (Transition/Delay from previous frame)
+    smoothing: {
+        enabled: false,  // DISABLED GLOBAL SMOOTHING
+        factor: 1.0     
+    },
+    // Mask Delay (Viscous trails for the black mask)
+    maskDelay: {
+        enabled: true,
+        factor: 0.1     // Very low factor = heavy delay (0.1 = 10% new, 90% old)
     },
     debug: true
 };
@@ -67,6 +77,12 @@ let effectCanvas = null;
 let effectCtx = null;
 let humanCanvas = null;
 let humanCtx = null;
+let feedbackCanvas = null;
+let feedbackCtx = null;
+let delayedMaskCanvas = null;
+let delayedMaskCtx = null;
+let solidMaskCanvas = null;
+let solidMaskCtx = null;
 
 // Shared contour path
 let sharedContourPath = [];
@@ -124,6 +140,15 @@ function initDOM() {
             AppConfig.darkness.growSpeed = Math.max(0, AppConfig.darkness.growSpeed - 0.2);
             console.log('Darkness grow speed:', AppConfig.darkness.growSpeed);
         }
+        // Left/Right arrows - Adjust smoothing factor
+        if (e.key === 'ArrowRight') {
+            AppConfig.smoothing.factor = Math.min(1.0, AppConfig.smoothing.factor + 0.05);
+            console.log('Smoothing factor (Less delay):', AppConfig.smoothing.factor);
+        }
+        if (e.key === 'ArrowLeft') {
+            AppConfig.smoothing.factor = Math.max(0.01, AppConfig.smoothing.factor - 0.05);
+            console.log('Smoothing factor (More delay):', AppConfig.smoothing.factor);
+        }
         // 1 - Toggle Video Mirror
         if (e.key === '1') {
             AppConfig.mirror.video = !AppConfig.mirror.video;
@@ -171,6 +196,35 @@ function initCanvases(width, height) {
     
     humanCanvas = Utils.createOffscreenCanvas(width, height);
     humanCtx = humanCanvas.getContext('2d');
+    
+    // Feedback canvas for smoothing/trails
+    if (!feedbackCanvas) {
+        feedbackCanvas = Utils.createOffscreenCanvas(width, height);
+        feedbackCtx = feedbackCanvas.getContext('2d');
+        // Fill with black initially to prevent transparency
+        feedbackCtx.fillStyle = 'black';
+        feedbackCtx.fillRect(0, 0, width, height);
+    }
+    
+    // Delayed Mask Canvas (for viscous darkness trails)
+    if (!delayedMaskCanvas) {
+        delayedMaskCanvas = Utils.createOffscreenCanvas(width, height);
+        delayedMaskCtx = delayedMaskCanvas.getContext('2d');
+        // Fill with black initially (no person)
+        delayedMaskCtx.fillStyle = 'black';
+        delayedMaskCtx.fillRect(0, 0, width, height);
+        
+        solidMaskCanvas = Utils.createOffscreenCanvas(width, height);
+        solidMaskCtx = solidMaskCanvas.getContext('2d');
+    } else {
+        delayedMaskCanvas.width = width;
+        delayedMaskCanvas.height = height;
+        delayedMaskCtx.fillStyle = 'black';
+        delayedMaskCtx.fillRect(0, 0, width, height);
+        
+        solidMaskCanvas.width = width;
+        solidMaskCanvas.height = height;
+    }
 }
 
 // ==========================================
@@ -292,6 +346,22 @@ async function initSegmentation() {
             onError: (error) => {
                 console.error('Segmentation error:', error);
                 setState(AppState.ERROR);
+                // 显示详细错误信息
+                const errorContent = DOM.errorScreen.querySelector('.error-content');
+                if (errorContent) {
+                    errorContent.innerHTML = `
+                        <h2>Camera Access Required</h2>
+                        <p>${error.message || 'Please allow camera access to experience the mirror.'}</p>
+                        ${location.protocol !== 'https:' && location.hostname !== 'localhost' ? 
+                            '<p style="color: #e8c4a0; margin-top: 1rem;">⚠️ Tip: Camera requires HTTPS. Try accessing via localhost or use HTTPS.</p>' : ''}
+                        <button id="retry-btn">Try Again</button>
+                    `;
+                    // 重新绑定按钮事件
+                    const retryBtn = errorContent.querySelector('#retry-btn');
+                    if (retryBtn) {
+                        retryBtn.addEventListener('click', () => location.reload());
+                    }
+                }
                 Utils.removeClass(DOM.errorScreen, 'hidden');
                 Utils.addClass(DOM.loadingScreen, 'fade-out');
             }
@@ -382,8 +452,7 @@ function render(p, time) {
     const w = AppConfig.canvas.width;
     const h = AppConfig.canvas.height;
     
-    // Clear main canvas
-    p.background(10, 10, 15);
+    // Don't clear main canvas background - let compositeCanvas control everything
     
     if (currentState === AppState.LOADING || currentState === AppState.ERROR) {
         return;
@@ -400,10 +469,10 @@ function render(p, time) {
     // Update shared contour path
     sharedContourPath = contour;
     
-    // Update subsystems (Disabled unnecessary updates)
+    // Update subsystems
     // Particles.update(time);
     Effects.update(time);
-    // TextSystem.update(deltaTime, time, handVelocity, bodyParts, contour);
+    TextSystem.update(deltaTime, time, handVelocity, bodyParts, contour);
     
     // Add sparkles near hands on fast movement (DISABLED)
     /*
@@ -412,76 +481,47 @@ function render(p, time) {
     }
     */
     
+    // ==========================================
+    // Layer 1: Background Trail + Solid Black Background + Human Figure
+    // ==========================================
+
     // Clear composite canvas
     compositeCtx.clearRect(0, 0, w, h);
     
-    // ==========================================
-    // Layer 1: Background (mirrored)
-    // ==========================================
-    compositeCtx.save();
-    compositeCtx.translate(w, 0);
-    compositeCtx.scale(-1, 1);
+    // First, draw solid black background covering everything
     compositeCtx.fillStyle = 'black';
     compositeCtx.fillRect(0, 0, w, h);
-    compositeCtx.restore();
-    
-    // ==========================================
-    // Layer 2: Particles & Volumetric Light (DISABLED)
-    // ==========================================
-    /*
-    if (currentState === AppState.EFFECT || 
-        (currentState === AppState.TRANSITION && previousState === AppState.EFFECT)) {
-        const alpha = currentState === AppState.TRANSITION ? 
-            1 - getTransitionProgress() : 1;
-        
-        compositeCtx.save();
-        compositeCtx.globalAlpha = alpha;
-        Particles.draw(compositeCtx, 'effect');
-        compositeCtx.restore();
-    }
-    */
-    
-    // ==========================================
-    // Layer 3: Human Figure (draw first, before black mask)
-    // ==========================================
+
+    // Then draw background trails (motion blur effect)
+    // Trails contain only the human figure with transparent background
+    Effects.drawBackgroundTrail(compositeCtx);
+
+    // Finally draw the human figure on top (sharp and clear)
+    // And update the trail with the new human figure
     if (frame && mask) {
         renderHumanFigure(compositeCtx, frame, mask, erodedMask, contour, time);
+        
+        // Capture the pure human figure (transparent background) for next frame's trail
+        // We use the humanCanvas which is updated inside renderHumanFigure
+        Effects.updateBackgroundTrail(humanCanvas);
     }
     
     // ==========================================
-    // Layer 5: Encroaching Darkness (constantly shrinking, only person repels it)
+    // Layer 6: Text System (Active)
     // ==========================================
     
-    // Darkness grows over time
-    AppConfig.darkness.currentAmount += AppConfig.darkness.growSpeed;
-    
-    // Cap at max
-    if (AppConfig.darkness.currentAmount > AppConfig.darkness.maxAmount) {
-        AppConfig.darkness.currentAmount = AppConfig.darkness.maxAmount;
-    }
-    
-    // Draw the encroaching darkness - use MASK directly for accurate silhouette
-    Effects.drawEncroachingDarkness(compositeCtx, mask, w, h, {
-        darknessAmount: AppConfig.darkness.currentAmount,
-        opacity: 1.0, // Full opacity black
-        mirror: true  // Mirror to match flipped human figure
-    });
-    
-    // ==========================================
-    // Layer 6: Text System (DISABLED)
-    // ==========================================
-    /*
-    if (currentState === AppState.MIRROR || 
-        (currentState === AppState.TRANSITION && previousState !== AppState.MIRROR)) {
-        const alpha = currentState === AppState.TRANSITION ? 
-            getTransitionProgress() : 1;
+    // Always enable text system in EFFECT and MIRROR modes
+    if (currentState === AppState.MIRROR || currentState === AppState.EFFECT ||
+        (currentState === AppState.TRANSITION)) {
         
         compositeCtx.save();
-        compositeCtx.globalAlpha = alpha;
+        // Mirror the text layer to match the mirrored video
+        compositeCtx.translate(w, 0);
+        compositeCtx.scale(-1, 1);
+        
         TextSystem.draw(compositeCtx);
         compositeCtx.restore();
     }
-    */
     
     // ==========================================
     // Layer 7: Post Effects (DISABLED)
@@ -506,7 +546,10 @@ function render(p, time) {
     p.drawingContext.save();
     p.drawingContext.translate(w, 0);
     p.drawingContext.scale(-1, 1);
+    
+    // Draw directly (Global smoothing is disabled per request)
     p.drawingContext.drawImage(compositeCanvas, 0, 0);
+    
     p.drawingContext.restore();
 }
 
@@ -515,39 +558,9 @@ function render(p, time) {
 // ==========================================
 
 function renderBackground(ctx, w, h, time) {
-    // Dark gradient background
-    const gradient = ctx.createRadialGradient(
-        w / 2, h / 2, 0,
-        w / 2, h / 2, Math.max(w, h) * 0.8
-    );
-    
-    if (currentState === AppState.MIRROR) {
-        // Warmer background for calm mirror
-        gradient.addColorStop(0, '#1a1512');
-        gradient.addColorStop(0.5, '#12100e');
-        gradient.addColorStop(1, '#0a0908');
-    } else {
-        // Cooler background for effect mode
-        gradient.addColorStop(0, '#14141a');
-        gradient.addColorStop(0.5, '#0e0e12');
-        gradient.addColorStop(1, '#08080a');
-    }
-    
-    ctx.fillStyle = gradient;
+    // Solid black background for clean effect
+    ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, w, h);
-    
-    // Subtle animated noise pattern
-    const noiseAlpha = 0.02;
-    for (let i = 0; i < 50; i++) {
-        const x = Utils.noise(i * 0.1, time * 0.0001) * w;
-        const y = Utils.noise(i * 0.1 + 100, time * 0.0001) * h;
-        const size = Utils.noise(i * 0.1, time * 0.0002) * 3 + 1;
-        
-        ctx.fillStyle = `rgba(255, 255, 255, ${noiseAlpha})`;
-        ctx.beginPath();
-        ctx.arc(x, y, size, 0, Math.PI * 2);
-        ctx.fill();
-    }
 }
 
 // ==========================================
@@ -574,40 +587,43 @@ function renderHumanFigure(ctx, frame, mask, erodedMask, contour, time) {
     
     // Draw frame
     humanCtx.drawImage(frame, 0, 0, w, h);
+
+    // Apply color grading BEFORE masking to ensure clean background
+    humanCtx.globalCompositeOperation = 'overlay'; // or 'soft-light'
+    humanCtx.fillStyle = currentState === AppState.MIRROR ? '#554433' : '#334455'; // Warmer for mirror, cooler for effect
+    humanCtx.globalAlpha = 0.3;
+    humanCtx.fillRect(0, 0, w, h);
     
     // 2. Mask Layer Mirroring (for human cutout)
-    // If mask needs different mirroring than video, we need to handle it
+    // Apply slight blur for smoother edges with motion trails
+    humanCtx.filter = 'blur(1.5px)'; // Increased blur for smoother edge anti-aliasing
     humanCtx.globalCompositeOperation = 'destination-in';
-    
+    humanCtx.globalAlpha = 1.0; // Reset alpha for mask
+
     if (AppConfig.mirror.mask !== AppConfig.mirror.video) {
         // If they differ, we need to flip back/forth
         humanCtx.save();
         humanCtx.translate(w, 0);
         humanCtx.scale(-1, 1);
-        humanCtx.drawImage(erodedMask || mask, 0, 0, w, h);
+        humanCtx.drawImage(mask, 0, 0, w, h); // Use original mask with smoothing
         humanCtx.restore();
     } else {
-        humanCtx.drawImage(erodedMask || mask, 0, 0, w, h);
+        humanCtx.drawImage(mask, 0, 0, w, h); // Use original mask with smoothing
     }
+
+    // Reset filter and composite operation
+    humanCtx.filter = 'none';
+    humanCtx.globalCompositeOperation = 'source-over';
     
     humanCtx.restore();
-    
+
     // ==========================================
-    // Edge glow effect using shadow (DISABLED)
+    // Draw to Composite Canvas
     // ==========================================
-    /*
-    const glowColor = currentState === AppState.MIRROR ? '#e8c4a0' : '#a0c4d4';
-    
-    // Multiple glow passes for stronger effect
-    ctx.save();
-    ctx.shadowColor = glowColor;
-    ctx.shadowBlur = 25;
+
+    // Draw the human figure directly without any glow effects
     ctx.drawImage(humanCanvas, 0, 0);
-    ctx.restore();
-    */
-    
-    // Draw again without shadow for sharp image
-    ctx.drawImage(humanCanvas, 0, 0);
+
 }
 
 // ==========================================
@@ -647,4 +663,9 @@ window.SoftMirror = {
         DOM.debugPanel.classList.toggle('hidden', !AppConfig.debug);
     }
 };
+
+
+
+
+
 

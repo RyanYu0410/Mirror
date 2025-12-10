@@ -24,8 +24,8 @@ const Segmentation = (function() {
             minTrackingConfidence: 0.7    // Higher threshold
         },
         processing: {
-            skipFrames: 1,
-            maskScale: 0.75  // Higher resolution for sharper edges
+            skipFrames: 0,  // Process every frame for smoother results
+            maskScale: 1.0  // Full resolution for crisp edges
         },
         erosion: {
             defaultAmount: 2,  // Less erosion for sharper edges
