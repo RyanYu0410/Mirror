@@ -62,6 +62,7 @@ const Segmentation = (function() {
     // Camera watchdog — detects stalled/dropped camera stream and reconnects
     let lastFrameTimestamp = 0;
     let watchdogTimer = null;
+    let isRestarting = false;           // re-entrancy guard for restartCamera
     const WATCHDOG_INTERVAL_MS = 4000;  // check every 4 s
     const WATCHDOG_STALL_MS   = 8000;  // restart if no frame for 8 s
     
@@ -87,6 +88,52 @@ const Segmentation = (function() {
     // Initialization
     // ==========================================
     
+    // Single shared onFrame handler — used by both init and restartCamera.
+    async function handleFrame() {
+        if (!isInitialized) return;
+
+        frameCount++;
+        lastFrameTimestamp = performance.now();
+
+        if (!coverCrop && videoElement.videoWidth > 0) {
+            updateCoverCrop();
+        }
+
+        frameCtx.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
+        if (coverCrop) {
+            frameCtx.drawImage(
+                videoElement,
+                coverCrop.sx, coverCrop.sy, coverCrop.sw, coverCrop.sh,
+                0, 0, frameCanvas.width, frameCanvas.height
+            );
+        } else {
+            frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
+        }
+        currentFrame = frameCanvas;
+
+        if (isProcessing) return;
+        if (frameCount % (CONFIG.processing.skipFrames + 1) !== 0) return;
+
+        isProcessing = true;
+        let timeoutId = null;
+        try {
+            await Promise.race([
+                Promise.all([
+                    selfieSegmentation.send({ image: videoElement }),
+                    pose.send({ image: videoElement })
+                ]),
+                new Promise((_, reject) => {
+                    timeoutId = setTimeout(() => reject(new Error('inference timeout')), 5000);
+                })
+            ]);
+        } catch (_) {
+            // Per-frame errors and timeouts are non-fatal
+        } finally {
+            if (timeoutId !== null) clearTimeout(timeoutId);
+            isProcessing = false;
+        }
+    }
+
     function updateCoverCrop() {
         if (!videoElement || videoElement.videoWidth === 0) return;
         coverCrop = Utils.computeCoverCrop(
@@ -163,58 +210,9 @@ const Segmentation = (function() {
             
             updateProgress(60, 'Requesting camera access...');
             
-            // Initialize camera
+            // Initialize camera — onFrame is the shared handleFrame function
             camera = new Camera(videoElement, {
-                onFrame: async () => {
-                    if (!isInitialized) return;
-
-                    frameCount++;
-                    lastFrameTimestamp = performance.now(); // watchdog heartbeat
-
-                    // Lazy-compute cover crop once video dimensions are available
-                    if (!coverCrop && videoElement.videoWidth > 0) {
-                        updateCoverCrop();
-                    }
-
-                    // Capture the video frame with cover-crop so no stretching occurs
-                    frameCtx.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
-                    if (coverCrop) {
-                        frameCtx.drawImage(
-                            videoElement,
-                            coverCrop.sx, coverCrop.sy, coverCrop.sw, coverCrop.sh,
-                            0, 0, frameCanvas.width, frameCanvas.height
-                        );
-                    } else {
-                        frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
-                    }
-                    currentFrame = frameCanvas;
-
-                    // Skip ML inference on some frames for performance
-                    if (isProcessing) return;
-                    if (frameCount % (CONFIG.processing.skipFrames + 1) !== 0) return;
-
-                    isProcessing = true;
-
-                    try {
-                        // 5-second timeout guards against a hung MediaPipe promise
-                        // that would lock isProcessing = true forever.
-                        const timeout = new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('inference timeout')), 5000)
-                        );
-                        await Promise.race([
-                            Promise.all([
-                                selfieSegmentation.send({ image: videoElement }),
-                                pose.send({ image: videoElement })
-                            ]),
-                            timeout
-                        ]);
-                    } catch (err) {
-                        // Silently ignore per-frame errors (including timeout)
-                    } finally {
-                        // Always release the lock — even if inference hung or threw
-                        isProcessing = false;
-                    }
-                },
+                onFrame: handleFrame,
                 width: width,
                 height: height,
                 facingMode: 'user'
@@ -236,6 +234,14 @@ const Segmentation = (function() {
             console.log('Segmentation system ready');
 
             startWatchdog();
+
+            // When the tab becomes visible again, reset the watchdog timestamp so
+            // it does not immediately fire (the browser suspends the camera while hidden).
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden) {
+                    lastFrameTimestamp = performance.now();
+                }
+            });
 
             if (onReadyCallback) onReadyCallback();
             
@@ -560,16 +566,18 @@ const Segmentation = (function() {
     function startWatchdog() {
         if (watchdogTimer) clearInterval(watchdogTimer);
         watchdogTimer = setInterval(async () => {
-            if (!isInitialized) return;
+            if (!isInitialized || isRestarting || document.hidden) return;
             const stalledMs = performance.now() - lastFrameTimestamp;
             if (stalledMs > WATCHDOG_STALL_MS) {
-                console.warn(`Camera stalled for ${Math.round(stalledMs)}ms — restarting…`);
+                console.warn(`Camera stalled for ${Math.round(stalledMs)}ms — restarting...`);
                 await restartCamera();
             }
         }, WATCHDOG_INTERVAL_MS);
     }
 
     async function restartCamera() {
+        if (isRestarting) return;
+        isRestarting = true;
         try {
             if (camera) {
                 try { camera.stop(); } catch (_) {}
@@ -577,53 +585,11 @@ const Segmentation = (function() {
             isProcessing = false;
             coverCrop = null;
 
-            // Short delay before reconnecting
             await new Promise(resolve => setTimeout(resolve, 1000));
 
+            // Reuse the shared handleFrame — same logic, no duplication
             camera = new Camera(videoElement, {
-                onFrame: async () => {
-                    if (!isInitialized) return;
-
-                    frameCount++;
-                    lastFrameTimestamp = performance.now();
-
-                    if (!coverCrop && videoElement.videoWidth > 0) {
-                        updateCoverCrop();
-                    }
-
-                    frameCtx.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
-                    if (coverCrop) {
-                        frameCtx.drawImage(
-                            videoElement,
-                            coverCrop.sx, coverCrop.sy, coverCrop.sw, coverCrop.sh,
-                            0, 0, frameCanvas.width, frameCanvas.height
-                        );
-                    } else {
-                        frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
-                    }
-                    currentFrame = frameCanvas;
-
-                    if (isProcessing) return;
-                    if (frameCount % (CONFIG.processing.skipFrames + 1) !== 0) return;
-
-                    isProcessing = true;
-                    try {
-                        const timeout = new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('inference timeout')), 5000)
-                        );
-                        await Promise.race([
-                            Promise.all([
-                                selfieSegmentation.send({ image: videoElement }),
-                                pose.send({ image: videoElement })
-                            ]),
-                            timeout
-                        ]);
-                    } catch (err) {
-                        // ignore
-                    } finally {
-                        isProcessing = false;
-                    }
-                },
+                onFrame: handleFrame,
                 width: canvasW,
                 height: canvasH,
                 facingMode: 'user'
@@ -634,6 +600,8 @@ const Segmentation = (function() {
             console.log('Camera restarted successfully');
         } catch (err) {
             console.error('Camera restart failed:', err);
+        } finally {
+            isRestarting = false;
         }
     }
 

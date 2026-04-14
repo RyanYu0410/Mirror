@@ -81,10 +81,6 @@ const Effects = (function() {
         bloomCanvas = Utils.createOffscreenCanvas(width, height);
         bloomCtx = bloomCanvas.getContext('2d');
 
-        // Staging canvas for capturing snapshots
-        backgroundTrailCanvas = Utils.createOffscreenCanvas(width, height);
-        backgroundTrailCtx = backgroundTrailCanvas.getContext('2d');
-
         // Pre-allocate ring buffer of trail canvases (avoids per-frame allocation)
         backgroundTrailFrames = [];
         for (let i = 0; i < MAX_BACKGROUND_TRAIL; i++) {
@@ -103,10 +99,6 @@ const Effects = (function() {
         if (bloomCanvas) {
             bloomCanvas.width = width;
             bloomCanvas.height = height;
-        }
-        if (backgroundTrailCanvas) {
-            backgroundTrailCanvas.width = width;
-            backgroundTrailCanvas.height = height;
         }
         // Resize all ring-buffer slots and reset (old frames have wrong dimensions)
         for (const slot of backgroundTrailFrames) {
@@ -386,9 +378,6 @@ const Effects = (function() {
     let backgroundTrailHead = 0;   // index of the next slot to write into
     let backgroundTrailCount = 0;  // how many slots currently hold live frames
 
-    // Temporary staging canvas used when capturing a new trail snapshot
-    let backgroundTrailCanvas = null;
-    let backgroundTrailCtx = null;
 
     function initBlackMask(width, height) {
         blackMaskCanvas = Utils.createOffscreenCanvas(width, height);

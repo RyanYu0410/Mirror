@@ -56,13 +56,8 @@ let deltaTime = 0;
 let mainCanvas = null;
 let compositeCanvas = null;
 let compositeCtx = null;
-let effectCanvas = null;
-let effectCtx = null;
 let humanCanvas = null;
 let humanCtx = null;
-
-// Shared contour path
-let sharedContourPath = [];
 
 // ==========================================
 // DOM Elements
@@ -141,10 +136,7 @@ function initDOM() {
 function initCanvases(width, height) {
     compositeCanvas = Utils.createOffscreenCanvas(width, height);
     compositeCtx = compositeCanvas.getContext('2d');
-    
-    effectCanvas = Utils.createOffscreenCanvas(width, height);
-    effectCtx = effectCanvas.getContext('2d');
-    
+
     humanCanvas = Utils.createOffscreenCanvas(width, height);
     humanCtx = humanCanvas.getContext('2d');
 }
@@ -193,7 +185,8 @@ function sketch(p) {
     
     p.draw = function() {
         const now = performance.now();
-        deltaTime = now - lastFrameTime;
+        // Clamp to 100ms: prevents particles jumping after tab switch / sleep
+        deltaTime = Math.min(now - lastFrameTime, 100);
         lastFrameTime = now;
         
         // Update FPS
@@ -377,9 +370,6 @@ function render(p, time) {
     const contour = Segmentation.getContour();
     const bodyParts = Segmentation.getBodyParts();
     const handVelocity = Segmentation.getHandVelocity();
-    
-    // Update shared contour path
-    sharedContourPath = contour;
     
     // Update subsystems
     // Particles.update(time);

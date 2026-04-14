@@ -17,13 +17,12 @@ const TextSystem = (function() {
             maxActive: 35 
         },
         text: {
-            fontSize: { min: 24, max: 48 }, // Larger text
+            fontSize: { min: 24, max: 48 },
             opacity: { start: 0, peak: 0.95, end: 0 },
-            lifetime: { min: 4000, max: 6000 }, // Longer lifetime to allow slow fade in (was 1500-2500)
-            fadeIn: 2000, // Very slow fade in (was 400)
-            fadeOut: 1500, // Slow fade out (was 600)
-            driftSpeed: 0.15, // Slower drift for elegance
-            driftAngle: Math.PI / 4, 
+            lifetime: { min: 4000, max: 6000 },
+            fadeIn: 2000,
+            fadeOut: 1500,
+            driftSpeed: 0.15,
             fontFamily: "'Cormorant Garamond', Georgia, serif"
         },
         collision: {
@@ -175,7 +174,6 @@ const TextSystem = (function() {
             this.width = ctx.measureText(this.text).width;
             
             // Glow effect
-            const glowAlpha = this.opacity * 0.6;
             ctx.shadowColor = this.color;
             ctx.shadowBlur = this.isFast ? 20 : 12;
             
@@ -318,12 +316,10 @@ const TextSystem = (function() {
     // Collision Detection
     // ==========================================
     
-    function checkCollision(newX, newY, newRadius) {
+    function checkCollision(newX, newY) {
         for (const p of particles) {
             const dist = Utils.dist(newX, newY, p.x, p.y);
-            const minDist = CONFIG.collision.minDistance;
-            
-            if (dist < minDist) {
+            if (dist < CONFIG.collision.minDistance) {
                 return true;
             }
         }
@@ -410,7 +406,7 @@ const TextSystem = (function() {
         if (!position) return false;
         
         // Check for collision with existing text
-        if (checkCollision(position.x, position.y, CONFIG.collision.minDistance)) {
+        if (checkCollision(position.x, position.y)) {
             return false;
         }
         
