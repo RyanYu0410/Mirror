@@ -53,6 +53,11 @@ const Segmentation = (function() {
     let contourPoints = [];
     let bodyParts = {};
     let handVelocity = { left: 0, right: 0, max: 0 };
+
+    // Cover-crop: keeps camera feed at its native ratio on any screen
+    let coverCrop = null;        // { sx, sy, sw, sh, scale, isExact } or null
+    let canvasW = 0;
+    let canvasH = 0;
     
     let previousHandPositions = { left: null, right: null };
     let isInitialized = false;
@@ -76,8 +81,18 @@ const Segmentation = (function() {
     // Initialization
     // ==========================================
     
+    function updateCoverCrop() {
+        if (!videoElement || videoElement.videoWidth === 0) return;
+        coverCrop = Utils.computeCoverCrop(
+            videoElement.videoWidth, videoElement.videoHeight,
+            canvasW, canvasH
+        );
+    }
+
     async function init(options = {}) {
         const { onReady, onError, onProgress, width = 1280, height = 720 } = options;
+        canvasW = width;
+        canvasH = height;
         
         onReadyCallback = onReady;
         onErrorCallback = onError;
@@ -149,8 +164,22 @@ const Segmentation = (function() {
                     
                     frameCount++;
                     
-                    // Always capture frame for display
-                    frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
+                    // Lazy-compute cover crop once video dimensions are available
+                    if (!coverCrop && videoElement.videoWidth > 0) {
+                        updateCoverCrop();
+                    }
+
+                    // Capture the video frame with cover-crop so no stretching occurs
+                    frameCtx.clearRect(0, 0, frameCanvas.width, frameCanvas.height);
+                    if (coverCrop) {
+                        frameCtx.drawImage(
+                            videoElement,
+                            coverCrop.sx, coverCrop.sy, coverCrop.sw, coverCrop.sh,
+                            0, 0, frameCanvas.width, frameCanvas.height
+                        );
+                    } else {
+                        frameCtx.drawImage(videoElement, 0, 0, frameCanvas.width, frameCanvas.height);
+                    }
                     currentFrame = frameCanvas;
                     
                     // Skip processing on some frames for performance
@@ -209,12 +238,20 @@ const Segmentation = (function() {
     
     function onSegmentationResults(results) {
         if (!results.segmentationMask) return;
-        
-        // IMPORTANT: Clear the canvas first to prevent mask accumulation/ghosting
+
+        // Clear first to prevent mask accumulation/ghosting
         maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-        
-        // Draw new mask to canvas
-        maskCtx.drawImage(results.segmentationMask, 0, 0, maskCanvas.width, maskCanvas.height);
+
+        // Apply the same cover crop used for the frame so mask aligns perfectly
+        if (coverCrop) {
+            maskCtx.drawImage(
+                results.segmentationMask,
+                coverCrop.sx, coverCrop.sy, coverCrop.sw, coverCrop.sh,
+                0, 0, maskCanvas.width, maskCanvas.height
+            );
+        } else {
+            maskCtx.drawImage(results.segmentationMask, 0, 0, maskCanvas.width, maskCanvas.height);
+        }
         currentMask = maskCanvas;
         
         // Update eroded mask and contour
@@ -289,12 +326,21 @@ const Segmentation = (function() {
 
     function landmarkToPoint(landmark, w, h) {
         if (!landmark || landmark.visibility < 0.3) return null;
-        return {
-            x: landmark.x * w,
-            y: landmark.y * h,
-            z: landmark.z,
-            visibility: landmark.visibility
-        };
+
+        let x, y;
+        if (coverCrop) {
+            // Landmark coords are normalized relative to the native video frame.
+            // Map them into the cropped region, then to canvas pixels.
+            const videoW = videoElement.videoWidth;
+            const videoH = videoElement.videoHeight;
+            x = (landmark.x * videoW - coverCrop.sx) / coverCrop.sw * w;
+            y = (landmark.y * videoH - coverCrop.sy) / coverCrop.sh * h;
+        } else {
+            x = landmark.x * w;
+            y = landmark.y * h;
+        }
+
+        return { x, y, z: landmark.z, visibility: landmark.visibility };
     }
 
     function updateHandVelocity() {
@@ -477,6 +523,21 @@ const Segmentation = (function() {
         );
     }
 
+    function resize(width, height) {
+        canvasW = width;
+        canvasH = height;
+        coverCrop = null; // Will be recomputed on the next frame
+    }
+
+    function getCoverCrop() {
+        return coverCrop;
+    }
+
+    function getNativeVideoSize() {
+        if (!videoElement) return null;
+        return { w: videoElement.videoWidth, h: videoElement.videoHeight };
+    }
+
     function destroy() {
         if (camera) {
             camera.stop();
@@ -493,6 +554,7 @@ const Segmentation = (function() {
     
     return {
         init,
+        resize,
         getFrame,
         getMask,
         getErodedMask,
@@ -502,6 +564,8 @@ const Segmentation = (function() {
         isHandMovingFast,
         getVideoElement,
         getConfig,
+        getCoverCrop,
+        getNativeVideoSize,
         setErosionAmount,
         destroy,
         get isReady() { return isInitialized; }

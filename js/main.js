@@ -79,6 +79,7 @@ const DOM = {
     fpsCounter: null,
     stateInfo: null,
     handVelocity: null,
+    ratioInfo: null,
     errorScreen: null,
     retryBtn: null
 };
@@ -98,6 +99,7 @@ function initDOM() {
     DOM.fpsCounter = Utils.$('#fps-counter');
     DOM.stateInfo = Utils.$('#state-info');
     DOM.handVelocity = Utils.$('#hand-velocity');
+    DOM.ratioInfo = Utils.$('#ratio-info');
     DOM.errorScreen = Utils.$('#error-screen');
     DOM.retryBtn = Utils.$('#retry-btn');
     
@@ -210,17 +212,18 @@ function sketch(p) {
     };
     
     p.windowResized = function() {
-        // Full screen on resize
-        AppConfig.canvas.width = window.innerWidth;
-        AppConfig.canvas.height = window.innerHeight;
-        
-        p.resizeCanvas(window.innerWidth, window.innerHeight);
-        
-        // Resize offscreen canvases
-        initCanvases(window.innerWidth, window.innerHeight);
-        
-        // Notify subsystems
-        Effects.resize(window.innerWidth, window.innerHeight);
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+
+        AppConfig.canvas.width = w;
+        AppConfig.canvas.height = h;
+
+        p.resizeCanvas(w, h);
+        initCanvases(w, h);
+
+        // Notify subsystems (Segmentation recomputes cover crop on next frame)
+        Segmentation.resize(w, h);
+        Effects.resize(w, h);
     };
 }
 
@@ -531,12 +534,32 @@ function updateDebugPanel() {
         DOM.fpsCounter.textContent = `FPS: ${fpsCounter.getFPS()}`;
     }
     if (DOM.stateInfo) {
-        DOM.stateInfo.innerHTML = `State: ${currentState} | Video: ${AppConfig.mirror.video ? 'Mir' : 'Nor'} | Mask: ${AppConfig.mirror.mask ? 'Mir' : 'Nor'}`;
+        DOM.stateInfo.textContent = `State: ${currentState} | V:${AppConfig.mirror.video ? 'Mir' : 'Nor'} M:${AppConfig.mirror.mask ? 'Mir' : 'Nor'}`;
     }
     if (DOM.handVelocity) {
         const hv = Segmentation.getHandVelocity();
         const contour = Segmentation.getContour();
         DOM.handVelocity.textContent = `Hand: ${hv.max.toFixed(1)} | Contour: ${contour.length} pts`;
+    }
+    if (DOM.ratioInfo) {
+        const native = Segmentation.getNativeVideoSize();
+        const crop = Segmentation.getCoverCrop();
+        const w = AppConfig.canvas.width;
+        const h = AppConfig.canvas.height;
+        const screenRatio = Utils.formatAspectRatio(w, h);
+        if (native && native.w > 0) {
+            const camRatio = Utils.formatAspectRatio(native.w, native.h);
+            if (crop && !crop.isExact) {
+                const cropPx = crop.sx > 0
+                    ? `crop ${Math.round(crop.sx * 2)}px horiz`
+                    : `crop ${Math.round(crop.sy * 2)}px vert`;
+                DOM.ratioInfo.textContent = `Screen ${screenRatio} | Cam ${camRatio} | ${cropPx}`;
+            } else {
+                DOM.ratioInfo.textContent = `Screen ${screenRatio} | Cam ${camRatio} | exact fit`;
+            }
+        } else {
+            DOM.ratioInfo.textContent = `Screen ${screenRatio} | Cam loading...`;
+        }
     }
 }
 

@@ -568,6 +568,38 @@ const Utils = (function() {
     }
 
     // ==========================================
+    // Aspect Ratio / Cover Crop Utilities
+    // ==========================================
+
+    /**
+     * Compute the source-crop rectangle that makes srcW×srcH "cover" dstW×dstH
+     * without stretching (identical logic to CSS object-fit:cover).
+     *
+     * Use the result as the first four args of the 9-argument drawImage:
+     *   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, dstW, dstH)
+     *
+     * @returns {{ sx, sy, sw, sh, scale, isExact }}
+     */
+    function computeCoverCrop(srcW, srcH, dstW, dstH) {
+        const scale = Math.max(dstW / srcW, dstH / srcH);
+        const sw = dstW / scale;
+        const sh = dstH / scale;
+        const sx = (srcW - sw) / 2;
+        const sy = (srcH - sh) / 2;
+        const isExact = Math.abs(sw - srcW) < 0.5 && Math.abs(sh - srcH) < 0.5;
+        return { sx, sy, sw, sh, scale, isExact };
+    }
+
+    /**
+     * Format a width/height pair as a simplified ratio string, e.g. "16:9".
+     */
+    function formatAspectRatio(w, h) {
+        function gcd(a, b) { return b === 0 ? a : gcd(b, a % b); }
+        const g = gcd(Math.round(w), Math.round(h));
+        return `${Math.round(w) / g}:${Math.round(h) / g}`;
+    }
+
+    // ==========================================
     // Canvas Utilities
     // ==========================================
     
@@ -741,6 +773,10 @@ const Utils = (function() {
         SmoothValue,
         SmoothVector,
         
+        // Aspect ratio / cover crop
+        computeCoverCrop,
+        formatAspectRatio,
+
         // Canvas
         createOffscreenCanvas,
         clearCanvas,
