@@ -74,13 +74,23 @@ const Effects = (function() {
     // Initialization
     // ==========================================
     
+    // Ensure glitch/bloom canvases exist at the current size (lazy — only when effects are enabled)
+    function ensureGlitchCanvas(w, h) {
+        if (!glitchCanvas || glitchCanvas.width !== w || glitchCanvas.height !== h) {
+            glitchCanvas = Utils.createOffscreenCanvas(w, h);
+            glitchCtx = glitchCanvas.getContext('2d');
+        }
+    }
+
+    function ensureBloomCanvas(w, h) {
+        if (!bloomCanvas || bloomCanvas.width !== w || bloomCanvas.height !== h) {
+            bloomCanvas = Utils.createOffscreenCanvas(w, h);
+            bloomCtx = bloomCanvas.getContext('2d');
+        }
+    }
+
     function init(width, height) {
-        glitchCanvas = Utils.createOffscreenCanvas(width, height);
-        glitchCtx = glitchCanvas.getContext('2d');
-
-        bloomCanvas = Utils.createOffscreenCanvas(width, height);
-        bloomCtx = bloomCanvas.getContext('2d');
-
+        // glitchCanvas and bloomCanvas are lazy — allocated only when their effect is enabled.
         // Pre-allocate ring buffer of trail canvases (avoids per-frame allocation)
         backgroundTrailFrames = [];
         for (let i = 0; i < MAX_BACKGROUND_TRAIL; i++) {
@@ -92,14 +102,10 @@ const Effects = (function() {
     }
 
     function resize(width, height) {
-        if (glitchCanvas) {
-            glitchCanvas.width = width;
-            glitchCanvas.height = height;
-        }
-        if (bloomCanvas) {
-            bloomCanvas.width = width;
-            bloomCanvas.height = height;
-        }
+        // glitchCanvas / bloomCanvas will self-resize on next use (lazy)
+        glitchCanvas = null;
+        bloomCanvas = null;
+
         // Resize all ring-buffer slots and reset (old frames have wrong dimensions)
         for (const slot of backgroundTrailFrames) {
             slot.canvas.width = width;
@@ -150,6 +156,8 @@ const Effects = (function() {
         const cfg = CONFIG.glitch;
         const w = sourceCanvas.width;
         const h = sourceCanvas.height;
+
+        ensureGlitchCanvas(w, h);
         
         // Clear and copy source
         glitchCtx.clearRect(0, 0, w, h);
@@ -220,8 +228,10 @@ const Effects = (function() {
         if (!CONFIG.bloom.enabled) return;
         
         const cfg = CONFIG.bloom;
-        const w = bloomCanvas.width;
-        const h = bloomCanvas.height;
+        const w = sourceCanvas.width;
+        const h = sourceCanvas.height;
+
+        ensureBloomCanvas(w, h);
         
         // Extract bright areas
         bloomCtx.clearRect(0, 0, w, h);
@@ -371,9 +381,10 @@ const Effects = (function() {
     let blackMaskCanvas = null;
     let blackMaskCtx = null;
 
-    // Background trail for motion blur effect - ring buffer of pre-allocated canvases
-    const MAX_BACKGROUND_TRAIL = 8;
-    const BACKGROUND_TRAIL_FADE = 0.85;
+    // Background trail for motion blur effect - ring buffer of pre-allocated canvases.
+    // 4 slots is the sweet spot: keeps ~3 visible ghost frames while halving RAM vs 8.
+    const MAX_BACKGROUND_TRAIL = 4;
+    const BACKGROUND_TRAIL_FADE = 0.75; // faster fade so trail still dissolves in ~4 frames
     let backgroundTrailFrames = []; // array of { canvas, ctx, alpha, active }
     let backgroundTrailHead = 0;   // index of the next slot to write into
     let backgroundTrailCount = 0;  // how many slots currently hold live frames

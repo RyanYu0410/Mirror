@@ -134,11 +134,19 @@ function initDOM() {
 }
 
 function initCanvases(width, height) {
-    compositeCanvas = Utils.createOffscreenCanvas(width, height);
-    compositeCtx = compositeCanvas.getContext('2d');
-
-    humanCanvas = Utils.createOffscreenCanvas(width, height);
-    humanCtx = humanCanvas.getContext('2d');
+    if (!compositeCanvas) {
+        // First call: allocate
+        compositeCanvas = Utils.createOffscreenCanvas(width, height);
+        compositeCtx = compositeCanvas.getContext('2d');
+        humanCanvas = Utils.createOffscreenCanvas(width, height);
+        humanCtx = humanCanvas.getContext('2d');
+    } else {
+        // Subsequent calls (window resize): resize in-place to avoid GC churn
+        compositeCanvas.width = width;
+        compositeCanvas.height = height;
+        humanCanvas.width = width;
+        humanCanvas.height = height;
+    }
 }
 
 // ==========================================

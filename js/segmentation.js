@@ -25,7 +25,8 @@ const Segmentation = (function() {
         },
         processing: {
             skipFrames: 0,  // Process every frame for smoother results
-            maskScale: 1.0  // Full resolution for crisp edges
+            maskScale: 0.5  // Half-res for mask processing: masks are inherently blurry,
+                            // half-res costs 1/4 the RAM and speeds up getImageData/contour scan
         },
         erosion: {
             defaultAmount: 2,  // Less erosion for sharper edges
