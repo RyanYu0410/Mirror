@@ -15,33 +15,16 @@ const AppConfig = {
         targetFPS: 30
     },
     timing: {
-        effectDuration: 45000,
-        transitionDuration: 2000,
-        mirrorDuration: 30000
+        effectDuration: 45000,      // ms in EFFECT mode before auto-transition
+        transitionDuration: 2000,   // ms for cross-fade transition
+        mirrorDuration: 30000       // ms in CALM MIRROR mode before auto-transition
     },
-    darkness: {
-        baseAmount: 100,      // 起始值 - Start fully dark for immediate mask
-        maxAmount: 150,     // 最大值（达到后人物周围没有buffer）
-        growSpeed: 0.0,     // 黑暗生长速度（像素/帧）- Static mask
-        currentAmount: 100,   // 当前值
-        mirrorMask: true    // 默认开启
-    },
-    // Mirror controls (tested)
+    // Mirror controls - toggleable via keyboard shortcuts 1/2
     mirror: {
-        video: false,   // 不翻转摄像头画面（已测试正确）
-        mask: true
+        video: false,   // flip the raw camera feed horizontally
+        mask: true      // flip the segmentation mask to match
     },
-    // Visual Smoothing (Transition/Delay from previous frame)
-    smoothing: {
-        enabled: false,  // DISABLED GLOBAL SMOOTHING
-        factor: 1.0     
-    },
-    // Mask Delay (Viscous trails for the black mask)
-    maskDelay: {
-        enabled: true,
-        factor: 0.1     // Very low factor = heavy delay (0.1 = 10% new, 90% old)
-    },
-    debug: true
+    debug: false        // press D to toggle debug panel at runtime
 };
 
 // ==========================================
@@ -77,12 +60,6 @@ let effectCanvas = null;
 let effectCtx = null;
 let humanCanvas = null;
 let humanCtx = null;
-let feedbackCanvas = null;
-let feedbackCtx = null;
-let delayedMaskCanvas = null;
-let delayedMaskCtx = null;
-let solidMaskCanvas = null;
-let solidMaskCtx = null;
 
 // Shared contour path
 let sharedContourPath = [];
@@ -131,45 +108,17 @@ function initDOM() {
             AppConfig.debug = !AppConfig.debug;
             DOM.debugPanel.classList.toggle('hidden', !AppConfig.debug);
         }
-        // Up/Down arrows - Adjust darkness growth speed
-        if (e.key === 'ArrowUp') {
-            AppConfig.darkness.growSpeed = Math.min(3, AppConfig.darkness.growSpeed + 0.2);
-            console.log('Darkness grow speed:', AppConfig.darkness.growSpeed);
-        }
-        if (e.key === 'ArrowDown') {
-            AppConfig.darkness.growSpeed = Math.max(0, AppConfig.darkness.growSpeed - 0.2);
-            console.log('Darkness grow speed:', AppConfig.darkness.growSpeed);
-        }
-        // Left/Right arrows - Adjust smoothing factor
-        if (e.key === 'ArrowRight') {
-            AppConfig.smoothing.factor = Math.min(1.0, AppConfig.smoothing.factor + 0.05);
-            console.log('Smoothing factor (Less delay):', AppConfig.smoothing.factor);
-        }
-        if (e.key === 'ArrowLeft') {
-            AppConfig.smoothing.factor = Math.max(0.01, AppConfig.smoothing.factor - 0.05);
-            console.log('Smoothing factor (More delay):', AppConfig.smoothing.factor);
-        }
-        // 1 - Toggle Video Mirror
+        // 1 - Toggle video mirror
         if (e.key === '1') {
             AppConfig.mirror.video = !AppConfig.mirror.video;
-            console.log('Video Mirror:', AppConfig.mirror.video);
+            console.log('Video mirror:', AppConfig.mirror.video);
         }
-        // 2 - Toggle Mask Mirror (affects human cutout)
+        // 2 - Toggle mask mirror (affects human cutout alignment)
         if (e.key === '2') {
             AppConfig.mirror.mask = !AppConfig.mirror.mask;
-            console.log('Human Mask Mirror:', AppConfig.mirror.mask);
+            console.log('Mask mirror:', AppConfig.mirror.mask);
         }
-        // 3 - Toggle Darkness Mask Mirror (affects black background cutout)
-        if (e.key === '3') {
-            AppConfig.darkness.mirrorMask = !AppConfig.darkness.mirrorMask;
-            console.log('Darkness Mask Mirror:', AppConfig.darkness.mirrorMask);
-        }
-        // M - Toggle mask mirror
-        if (e.key === 'm' || e.key === 'M') {
-            AppConfig.darkness.mirrorMask = !AppConfig.darkness.mirrorMask;
-            console.log('Mask mirror:', AppConfig.darkness.mirrorMask);
-        }
-        // Space - Force state change
+        // Space - Force state transition
         if (e.key === ' ') {
             if (currentState === AppState.EFFECT) {
                 setState(AppState.MIRROR);
@@ -196,35 +145,6 @@ function initCanvases(width, height) {
     
     humanCanvas = Utils.createOffscreenCanvas(width, height);
     humanCtx = humanCanvas.getContext('2d');
-    
-    // Feedback canvas for smoothing/trails
-    if (!feedbackCanvas) {
-        feedbackCanvas = Utils.createOffscreenCanvas(width, height);
-        feedbackCtx = feedbackCanvas.getContext('2d');
-        // Fill with black initially to prevent transparency
-        feedbackCtx.fillStyle = 'black';
-        feedbackCtx.fillRect(0, 0, width, height);
-    }
-    
-    // Delayed Mask Canvas (for viscous darkness trails)
-    if (!delayedMaskCanvas) {
-        delayedMaskCanvas = Utils.createOffscreenCanvas(width, height);
-        delayedMaskCtx = delayedMaskCanvas.getContext('2d');
-        // Fill with black initially (no person)
-        delayedMaskCtx.fillStyle = 'black';
-        delayedMaskCtx.fillRect(0, 0, width, height);
-        
-        solidMaskCanvas = Utils.createOffscreenCanvas(width, height);
-        solidMaskCtx = solidMaskCanvas.getContext('2d');
-    } else {
-        delayedMaskCanvas.width = width;
-        delayedMaskCanvas.height = height;
-        delayedMaskCtx.fillStyle = 'black';
-        delayedMaskCtx.fillRect(0, 0, width, height);
-        
-        solidMaskCanvas.width = width;
-        solidMaskCanvas.height = height;
-    }
 }
 
 // ==========================================
@@ -255,7 +175,6 @@ function sketch(p) {
         initCanvases(canvasWidth, canvasHeight);
         
         // Initialize subsystems
-        Particles.init(canvasWidth, canvasHeight);
         Effects.init(canvasWidth, canvasHeight);
         
         // Initialize FPS counter
@@ -301,7 +220,6 @@ function sketch(p) {
         initCanvases(window.innerWidth, window.innerHeight);
         
         // Notify subsystems
-        Particles.resize(window.innerWidth, window.innerHeight);
         Effects.resize(window.innerWidth, window.innerHeight);
     };
 }
@@ -346,7 +264,6 @@ async function initSegmentation() {
             onError: (error) => {
                 console.error('Segmentation error:', error);
                 setState(AppState.ERROR);
-                // 显示详细错误信息
                 const errorContent = DOM.errorScreen.querySelector('.error-content');
                 if (errorContent) {
                     errorContent.innerHTML = `
@@ -356,7 +273,6 @@ async function initSegmentation() {
                             '<p style="color: #e8c4a0; margin-top: 1rem;">⚠️ Tip: Camera requires HTTPS. Try accessing via localhost or use HTTPS.</p>' : ''}
                         <button id="retry-btn">Try Again</button>
                     `;
-                    // 重新绑定按钮事件
                     const retryBtn = errorContent.querySelector('#retry-btn');
                     if (retryBtn) {
                         retryBtn.addEventListener('click', () => location.reload());
@@ -438,12 +354,6 @@ function updateState(now) {
     }
 }
 
-function getTransitionProgress() {
-    if (currentState !== AppState.TRANSITION) return 0;
-    const elapsed = performance.now() - stateStartTime;
-    return Utils.clamp(elapsed / AppConfig.timing.transitionDuration, 0, 1);
-}
-
 // ==========================================
 // Main Render Loop
 // ==========================================
@@ -461,7 +371,6 @@ function render(p, time) {
     // Get segmentation data
     const frame = Segmentation.getFrame();
     const mask = Segmentation.getMask();
-    const erodedMask = Segmentation.getErodedMask();
     const contour = Segmentation.getContour();
     const bodyParts = Segmentation.getBodyParts();
     const handVelocity = Segmentation.getHandVelocity();
@@ -499,10 +408,7 @@ function render(p, time) {
     // Finally draw the human figure on top (sharp and clear)
     // And update the trail with the new human figure
     if (frame && mask) {
-        renderHumanFigure(compositeCtx, frame, mask, erodedMask, contour, time);
-        
-        // Capture the pure human figure (transparent background) for next frame's trail
-        // We use the humanCanvas which is updated inside renderHumanFigure
+        renderHumanFigure(compositeCtx, frame, mask, contour, time);
         Effects.updateBackgroundTrail(humanCanvas);
     }
     
@@ -554,20 +460,10 @@ function render(p, time) {
 }
 
 // ==========================================
-// Background Rendering
-// ==========================================
-
-function renderBackground(ctx, w, h, time) {
-    // Solid black background for clean effect
-    ctx.fillStyle = 'black';
-    ctx.fillRect(0, 0, w, h);
-}
-
-// ==========================================
 // Human Figure Rendering
 // ==========================================
 
-function renderHumanFigure(ctx, frame, mask, erodedMask, contour, time) {
+function renderHumanFigure(ctx, frame, mask, contour, time) {
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
     
@@ -578,8 +474,8 @@ function renderHumanFigure(ctx, frame, mask, erodedMask, contour, time) {
     // Human Figure with Mask
     // ==========================================
     humanCtx.save();
-    
-    // 1. Video Layer Mirroring
+
+    // 1. Optionally mirror the raw camera feed
     if (AppConfig.mirror.video) {
         humanCtx.translate(w, 0);
         humanCtx.scale(-1, 1);
@@ -588,15 +484,15 @@ function renderHumanFigure(ctx, frame, mask, erodedMask, contour, time) {
     // Draw frame
     humanCtx.drawImage(frame, 0, 0, w, h);
 
-    // Apply color grading BEFORE masking to ensure clean background
-    humanCtx.globalCompositeOperation = 'overlay'; // or 'soft-light'
-    humanCtx.fillStyle = currentState === AppState.MIRROR ? '#554433' : '#334455'; // Warmer for mirror, cooler for effect
+    // Color grade before masking: warm tone in MIRROR mode, cool in EFFECT mode
+    humanCtx.globalCompositeOperation = 'overlay';
+    humanCtx.fillStyle = currentState === AppState.MIRROR ? '#554433' : '#334455';
     humanCtx.globalAlpha = 0.3;
     humanCtx.fillRect(0, 0, w, h);
     
     // 2. Mask Layer Mirroring (for human cutout)
-    // Apply slight blur for smoother edges with motion trails
-    humanCtx.filter = 'blur(1.5px)'; // Increased blur for smoother edge anti-aliasing
+    // Minimal blur for edge anti-aliasing; mask erosion in segmentation handles most of the softening
+    humanCtx.filter = 'blur(0.5px)';
     humanCtx.globalCompositeOperation = 'destination-in';
     humanCtx.globalAlpha = 1.0; // Reset alpha for mask
 
@@ -635,7 +531,7 @@ function updateDebugPanel() {
         DOM.fpsCounter.textContent = `FPS: ${fpsCounter.getFPS()}`;
     }
     if (DOM.stateInfo) {
-        DOM.stateInfo.innerHTML = `V:${AppConfig.mirror.video ? 'Mir' : 'Nor'} | M:${AppConfig.mirror.mask ? 'Mir' : 'Nor'} | D:${AppConfig.darkness.mirrorMask ? 'Mir' : 'Nor'}`;
+        DOM.stateInfo.innerHTML = `State: ${currentState} | Video: ${AppConfig.mirror.video ? 'Mir' : 'Nor'} | Mask: ${AppConfig.mirror.mask ? 'Mir' : 'Nor'}`;
     }
     if (DOM.handVelocity) {
         const hv = Segmentation.getHandVelocity();

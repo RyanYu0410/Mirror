@@ -429,52 +429,6 @@ const Segmentation = (function() {
         return Utils.smoothPath(points, 1);
     }
 
-    function orderContourPoints(points) {
-        if (points.length < 3) return points;
-        
-        // Find the topmost point as starting point
-        let startIdx = 0;
-        let minY = Infinity;
-        
-        for (let i = 0; i < points.length; i++) {
-            if (points[i].y < minY) {
-                minY = points[i].y;
-                startIdx = i;
-            }
-        }
-        
-        const ordered = [points[startIdx]];
-        const used = new Set([startIdx]);
-        
-        // Greedily connect nearest neighbors
-        while (ordered.length < points.length) {
-            const last = ordered[ordered.length - 1];
-            let nearestIdx = -1;
-            let nearestDist = Infinity;
-            
-            for (let i = 0; i < points.length; i++) {
-                if (used.has(i)) continue;
-                
-                const d = Utils.dist(last.x, last.y, points[i].x, points[i].y);
-                if (d < nearestDist) {
-                    nearestDist = d;
-                    nearestIdx = i;
-                }
-            }
-            
-            if (nearestIdx === -1 || nearestDist > 50) break; // Gap too large
-            
-            ordered.push(points[nearestIdx]);
-            used.add(nearestIdx);
-        }
-        
-        // Simplify and smooth the path
-        let simplified = Utils.simplifyPath(ordered, 8);
-        simplified = Utils.smoothPath(simplified, 2);
-        
-        return simplified;
-    }
-
     // ==========================================
     // Public API
     // ==========================================

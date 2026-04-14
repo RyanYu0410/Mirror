@@ -12,7 +12,7 @@ const Effects = (function() {
     
     const CONFIG = {
         glitch: {
-            enabled: true,
+            enabled: false, // Display path disabled in main.js; set true to re-enable
             intensity: 0.3,
             sliceCount: 8,
             maxOffset: 20,
@@ -58,7 +58,12 @@ const Effects = (function() {
     let glitchActive = false;
     let glitchEndTime = 0;
     let currentMode = 'effect';
-    
+
+    // Contour trail state (used by updateContourTrail / drawContourTrail)
+    let contourTrail = [];
+    const maxTrailLength = 6;
+    const trailFadeSpeed = 0.85;
+
     // Offscreen canvases for effects
     let glitchCanvas = null;
     let glitchCtx = null;
@@ -76,9 +81,18 @@ const Effects = (function() {
         bloomCanvas = Utils.createOffscreenCanvas(width, height);
         bloomCtx = bloomCanvas.getContext('2d');
 
-        // Initialize background trail canvas
+        // Staging canvas for capturing snapshots
         backgroundTrailCanvas = Utils.createOffscreenCanvas(width, height);
         backgroundTrailCtx = backgroundTrailCanvas.getContext('2d');
+
+        // Pre-allocate ring buffer of trail canvases (avoids per-frame allocation)
+        backgroundTrailFrames = [];
+        for (let i = 0; i < MAX_BACKGROUND_TRAIL; i++) {
+            const c = Utils.createOffscreenCanvas(width, height);
+            backgroundTrailFrames.push({ canvas: c, ctx: c.getContext('2d'), alpha: 0, active: false });
+        }
+        backgroundTrailHead = 0;
+        backgroundTrailCount = 0;
     }
 
     function resize(width, height) {
@@ -94,6 +108,15 @@ const Effects = (function() {
             backgroundTrailCanvas.width = width;
             backgroundTrailCanvas.height = height;
         }
+        // Resize all ring-buffer slots and reset (old frames have wrong dimensions)
+        for (const slot of backgroundTrailFrames) {
+            slot.canvas.width = width;
+            slot.canvas.height = height;
+            slot.alpha = 0;
+            slot.active = false;
+        }
+        backgroundTrailHead = 0;
+        backgroundTrailCount = 0;
     }
 
     function setMode(mode) {
@@ -116,11 +139,11 @@ const Effects = (function() {
     }
 
     function updateGlitch() {
+        if (!CONFIG.glitch.enabled) return;
         if (glitchActive && performance.now() > glitchEndTime) {
             glitchActive = false;
         }
-        
-        // Random glitch trigger
+        // Random auto-trigger (only runs when glitch is enabled)
         if (!glitchActive && Math.random() < CONFIG.glitch.triggerChance) {
             triggerGlitch();
         }
@@ -356,12 +379,14 @@ const Effects = (function() {
     let blackMaskCanvas = null;
     let blackMaskCtx = null;
 
-    // Background trail for motion blur effect
-    let backgroundTrail = [];
-    const maxBackgroundTrailLength = 8; // Number of background frames to keep
-    const backgroundTrailFadeSpeed = 0.85; // How quickly background trails fade
+    // Background trail for motion blur effect - ring buffer of pre-allocated canvases
+    const MAX_BACKGROUND_TRAIL = 8;
+    const BACKGROUND_TRAIL_FADE = 0.85;
+    let backgroundTrailFrames = []; // array of { canvas, ctx, alpha, active }
+    let backgroundTrailHead = 0;   // index of the next slot to write into
+    let backgroundTrailCount = 0;  // how many slots currently hold live frames
 
-    // Offscreen canvas for background trail
+    // Temporary staging canvas used when capturing a new trail snapshot
     let backgroundTrailCanvas = null;
     let backgroundTrailCtx = null;
 
@@ -412,32 +437,27 @@ const Effects = (function() {
         ctx.drawImage(blackMaskCanvas, 0, 0);
     }
 
-    // Update background trail for motion blur effect
+    // Update background trail for motion blur effect (ring-buffer, no ImageData/getImageData)
     function updateBackgroundTrail(sourceCanvas) {
-        if (!sourceCanvas) return;
+        if (!sourceCanvas || backgroundTrailFrames.length === 0) return;
 
-        // Capture current frame from source canvas (which should be pure human figure with transparent bg)
-        // Clear background trail canvas first
-        backgroundTrailCtx.clearRect(0, 0, backgroundTrailCanvas.width, backgroundTrailCanvas.height);
-        
-        // Draw the source image
-        backgroundTrailCtx.drawImage(sourceCanvas, 0, 0);
-
-        // Add current frame to trail
-        backgroundTrail.unshift({
-            imageData: backgroundTrailCtx.getImageData(0, 0, backgroundTrailCanvas.width, backgroundTrailCanvas.height),
-            alpha: 1.0
-        });
-
-        // Limit trail length
-        if (backgroundTrail.length > maxBackgroundTrailLength) {
-            backgroundTrail.pop();
+        // Fade all existing active slots
+        for (const slot of backgroundTrailFrames) {
+            if (slot.active) {
+                slot.alpha *= BACKGROUND_TRAIL_FADE;
+                if (slot.alpha < 0.01) slot.active = false;
+            }
         }
 
-        // Fade existing trails
-        for (let i = 1; i < backgroundTrail.length; i++) {
-            backgroundTrail[i].alpha *= backgroundTrailFadeSpeed;
-        }
+        // Write new frame into the next ring-buffer slot via drawImage (no getImageData)
+        const slot = backgroundTrailFrames[backgroundTrailHead];
+        slot.ctx.clearRect(0, 0, slot.canvas.width, slot.canvas.height);
+        slot.ctx.drawImage(sourceCanvas, 0, 0);
+        slot.alpha = 1.0;
+        slot.active = true;
+
+        backgroundTrailHead = (backgroundTrailHead + 1) % MAX_BACKGROUND_TRAIL;
+        if (backgroundTrailCount < MAX_BACKGROUND_TRAIL) backgroundTrailCount++;
     }
 
     // Update contour trail for trailing effect (keeping for compatibility)
@@ -461,30 +481,19 @@ const Effects = (function() {
         }
     }
 
-    // Draw background motion blur trails
+    // Draw background motion blur trails (reads directly from pre-allocated ring-buffer canvases)
     function drawBackgroundTrail(ctx) {
-        if (backgroundTrail.length === 0) return;
+        if (backgroundTrailCount === 0) return;
 
         ctx.save();
-        
-        // Standard blend mode - trails have transparent backgrounds
         ctx.globalCompositeOperation = 'source-over';
 
-        // Draw trails from oldest to newest (back to front)
-        for (let trailIndex = backgroundTrail.length - 1; trailIndex >= 0; trailIndex--) {
-            const trail = backgroundTrail[trailIndex];
-            if (trail.alpha < 0.05) continue; // Skip very faded trails
-
-            // Create temporary canvas for this trail frame
-            const tempCanvas = Utils.createOffscreenCanvas(ctx.canvas.width, ctx.canvas.height);
-            const tempCtx = tempCanvas.getContext('2d');
-
-            // Put the stored image data onto temp canvas
-            tempCtx.putImageData(trail.imageData, 0, 0);
-
-            // Draw with appropriate alpha
-            ctx.globalAlpha = trail.alpha * 0.4; // Trails
-            ctx.drawImage(tempCanvas, 0, 0);
+        // Iterate ring buffer from oldest written slot to newest
+        for (let i = 0; i < MAX_BACKGROUND_TRAIL; i++) {
+            const slot = backgroundTrailFrames[i];
+            if (!slot.active || slot.alpha < 0.05) continue;
+            ctx.globalAlpha = slot.alpha * 0.4;
+            ctx.drawImage(slot.canvas, 0, 0);
         }
 
         ctx.restore();
@@ -513,7 +522,7 @@ const Effects = (function() {
             })) : trail.points;
 
             // Calculate trail-specific properties for smooth motion blur
-            const trailProgress = trailIndex / (contourTrail.length - 1); // 0 = oldest, 1 = newest
+            const trailProgress = trailIndex / Math.max(1, contourTrail.length - 1); // 0 = oldest, 1 = newest
             const alpha = trail.alpha * (0.2 + trailProgress * 0.8); // Gradual fade from old to new
             const blur = 8 + trailIndex * 1.5; // Subtle blur increase for older trails
             const width = CONFIG.glow.outlineWidth * (0.6 + trailProgress * 0.8); // Smooth width transition
@@ -632,43 +641,47 @@ const Effects = (function() {
     
     function drawMultipleOutlines(ctx, contourPoints, time, count = 3) {
         if (!contourPoints || contourPoints.length < 3) return;
-        
+
         const colors = CONFIG.glow.colors[currentMode];
-        
+
+        // Compute contour center once, outside all loops
+        let centerX = 0, centerY = 0;
+        for (const pt of contourPoints) {
+            centerX += pt.x;
+            centerY += pt.y;
+        }
+        centerX /= contourPoints.length;
+        centerY /= contourPoints.length;
+
         for (let i = 0; i < count; i++) {
             const offset = (i + 1) * 8;
             const alpha = 0.3 - i * 0.08;
             const colorIndex = (Math.floor(time * 0.002) + i) % colors.length;
-            
+
             ctx.save();
             ctx.strokeStyle = Utils.colorToString(colors[colorIndex], alpha);
             ctx.lineWidth = 2;
             ctx.setLineDash([10, 5]);
             ctx.lineDashOffset = time * 0.05 + i * 10;
-            
+
             ctx.beginPath();
-            
+
             for (let j = 0; j < contourPoints.length; j++) {
                 const p = contourPoints[j];
-                
-                // Offset outward from center
-                const centerX = contourPoints.reduce((sum, pt) => sum + pt.x, 0) / contourPoints.length;
-                const centerY = contourPoints.reduce((sum, pt) => sum + pt.y, 0) / contourPoints.length;
-                
                 const dx = p.x - centerX;
                 const dy = p.y - centerY;
                 const dist = Math.sqrt(dx * dx + dy * dy);
-                
+
                 const nx = p.x + (dx / dist) * offset;
                 const ny = p.y + (dy / dist) * offset;
-                
+
                 if (j === 0) {
                     ctx.moveTo(nx, ny);
                 } else {
                     ctx.lineTo(nx, ny);
                 }
             }
-            
+
             ctx.closePath();
             ctx.stroke();
             ctx.restore();

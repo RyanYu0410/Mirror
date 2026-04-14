@@ -170,7 +170,7 @@ html, body {
 
 /* Mode Indicator */
 #mode-indicator {
-    display: none !important; /* Hidden per user request */
+    display: none; /* Toggled via .hidden class from JS */
     position: fixed;
     top: 2rem;
     right: 2rem;
@@ -189,7 +189,7 @@ html, body {
 
 /* Debug Panel */
 #debug-panel {
-    display: none !important; /* Hidden per user request */
+    display: none; /* Toggled via .hidden class from JS; press D to show */
     position: fixed;
     top: 1rem;
     left: 1rem;
