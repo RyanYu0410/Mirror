@@ -236,11 +236,24 @@ function sketch(p) {
 
 async function initSegmentation() {
     try {
-        // On mobile, run all segmentation canvases at half resolution.
-        // The display canvas stays full-screen; smaller source just gets stretched up.
+        // Compute a processing resolution that:
+        //   1. Always preserves the screen's exact aspect ratio (no stretch, no wrong crop)
+        //   2. Caps total pixels at a device-appropriate budget
+        //
+        // Target pixel budget (area):
+        //   Mobile  → 640×480 = 307 200 px  (fits any mobile/tablet at ~half-res)
+        //   Desktop → 1280×720 = 921 600 px  (cap at 720p to avoid over-allocating on 4K)
+        //
+        // Formula: given target area T and screen ratio R = W/H
+        //   procH = sqrt(T / R)  →  procW = procH * R
+        // This always gives the right shape at the right size.
         const isMobile = Segmentation.getDiagnostics().isMobile;
-        const procWidth  = isMobile ? 640 : AppConfig.canvas.width;
-        const procHeight = isMobile ? 360 : AppConfig.canvas.height;
+        const W = AppConfig.canvas.width;
+        const H = AppConfig.canvas.height;
+        const ratio = W / H;
+        const TARGET_PIXELS = isMobile ? 640 * 480 : 1280 * 720;
+        const procHeight = Math.min(H, Math.round(Math.sqrt(TARGET_PIXELS / ratio)));
+        const procWidth  = Math.min(W, Math.round(procHeight * ratio));
 
         await Segmentation.init({
             width: procWidth,
