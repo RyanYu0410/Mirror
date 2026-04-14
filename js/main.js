@@ -75,6 +75,7 @@ const DOM = {
     stateInfo: null,
     handVelocity: null,
     ratioInfo: null,
+    inferenceInfo: null,
     errorScreen: null,
     retryBtn: null
 };
@@ -95,6 +96,7 @@ function initDOM() {
     DOM.stateInfo = Utils.$('#state-info');
     DOM.handVelocity = Utils.$('#hand-velocity');
     DOM.ratioInfo = Utils.$('#ratio-info');
+    DOM.inferenceInfo = Utils.$('#inference-info');
     DOM.errorScreen = Utils.$('#error-screen');
     DOM.retryBtn = Utils.$('#retry-btn');
     
@@ -234,9 +236,15 @@ function sketch(p) {
 
 async function initSegmentation() {
     try {
+        // On mobile, run all segmentation canvases at half resolution.
+        // The display canvas stays full-screen; smaller source just gets stretched up.
+        const isMobile = Segmentation.getDiagnostics().isMobile;
+        const procWidth  = isMobile ? 640 : AppConfig.canvas.width;
+        const procHeight = isMobile ? 360 : AppConfig.canvas.height;
+
         await Segmentation.init({
-            width: AppConfig.canvas.width,
-            height: AppConfig.canvas.height,
+            width: procWidth,
+            height: procHeight,
             onProgress: (percent, message) => {
                 if (DOM.loadingBar) {
                     DOM.loadingBar.style.width = `${percent}%`;
@@ -558,6 +566,18 @@ function updateDebugPanel() {
         } else {
             DOM.ratioInfo.textContent = `Screen ${screenRatio} | Cam loading...`;
         }
+    }
+    if (DOM.inferenceInfo) {
+        const d = Segmentation.getDiagnostics();
+        const warn = d.timeoutCount > 0 ? ` ⚠ timeout×${d.timeoutCount}` : '';
+        DOM.inferenceInfo.textContent =
+            `${d.isMobile ? '📱' : '🖥'} Inference avg ${d.inferenceAvgMs}ms max ${d.inferenceMaxMs}ms` +
+            ` | camFPS ${d.cameraFps} | skip 1/${d.skipFrames + 1}` +
+            ` | drop ${d.droppedFrames}${warn}`;
+        // Colour-code: red if avg inference > 80% of the timeout budget
+        const budget = d.isMobile ? 3000 : 5000;
+        DOM.inferenceInfo.style.color = d.inferenceAvgMs > budget * 0.8 ? '#ff6b6b' :
+                                         d.inferenceAvgMs > budget * 0.5 ? '#ffa94d' : '';
     }
 }
 

@@ -7,6 +7,14 @@ const Segmentation = (function() {
     'use strict';
 
     // ==========================================
+    // Device capability detection
+    // ==========================================
+
+    // True on phones and tablets (iPad reports maxTouchPoints > 1 on modern iPadOS)
+    const IS_MOBILE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                      (navigator.maxTouchPoints > 1 && !/Windows/.test(navigator.userAgent));
+
+    // ==========================================
     // Configuration
     // ==========================================
     
@@ -38,6 +46,10 @@ const Segmentation = (function() {
             threshold: 15
         }
     };
+
+    // Mobile: run inference on 1 of every 3 camera frames instead of every frame.
+    // Camera still captures at full fps so the displayed image stays smooth.
+    if (IS_MOBILE) CONFIG.processing.skipFrames = 2;
 
     // ==========================================
     // State
@@ -75,6 +87,17 @@ const Segmentation = (function() {
     let onErrorCallback = null;
     let onProgressCallback = null;
 
+    // ==========================================
+    // Diagnostics
+    // ==========================================
+
+    let diagInferenceSamples = []; // rolling window of last 15 durations (ms)
+    let diagTimeoutCount = 0;
+    let diagDroppedFrames = 0;     // frames skipped because isProcessing was still true
+    let diagCamFrameCount = 0;
+    let diagCamFps = 0;
+    let diagCamFpsLastCheck = 0;
+
     // Offscreen canvases for processing
     let maskCanvas = null;
     let maskCtx = null;
@@ -96,6 +119,14 @@ const Segmentation = (function() {
         frameCount++;
         lastFrameTimestamp = performance.now();
 
+        // Camera FPS: count frames, settle once per second
+        diagCamFrameCount++;
+        if (lastFrameTimestamp - diagCamFpsLastCheck >= 1000) {
+            diagCamFps = diagCamFrameCount;
+            diagCamFrameCount = 0;
+            diagCamFpsLastCheck = lastFrameTimestamp;
+        }
+
         if (!coverCrop && videoElement.videoWidth > 0) {
             updateCoverCrop();
         }
@@ -112,11 +143,18 @@ const Segmentation = (function() {
         }
         currentFrame = frameCanvas;
 
-        if (isProcessing) return;
+        if (isProcessing) {
+            diagDroppedFrames++;
+            return;
+        }
         if (frameCount % (CONFIG.processing.skipFrames + 1) !== 0) return;
 
         isProcessing = true;
+        const inferenceStart = performance.now();
         let timeoutId = null;
+        let timedOut = false;
+        // Shorter timeout on mobile — we want to detect thermal throttling quickly
+        const INFERENCE_TIMEOUT = IS_MOBILE ? 3000 : 5000;
         try {
             await Promise.race([
                 Promise.all([
@@ -124,13 +162,21 @@ const Segmentation = (function() {
                     pose.send({ image: videoElement })
                 ]),
                 new Promise((_, reject) => {
-                    timeoutId = setTimeout(() => reject(new Error('inference timeout')), 5000);
+                    timeoutId = setTimeout(() => {
+                        timedOut = true;
+                        reject(new Error('inference timeout'));
+                    }, INFERENCE_TIMEOUT);
                 })
             ]);
         } catch (_) {
-            // Per-frame errors and timeouts are non-fatal
+            if (timedOut) {
+                diagTimeoutCount++;
+                console.warn(`[Mirror] inference timeout #${diagTimeoutCount} — device may be overloaded`);
+            }
         } finally {
             if (timeoutId !== null) clearTimeout(timeoutId);
+            diagInferenceSamples.push(performance.now() - inferenceStart);
+            if (diagInferenceSamples.length > 15) diagInferenceSamples.shift();
             isProcessing = false;
         }
     }
@@ -624,6 +670,21 @@ const Segmentation = (function() {
     // Export
     // ==========================================
     
+    function getDiagnostics() {
+        const n = diagInferenceSamples.length;
+        const avg = n > 0 ? diagInferenceSamples.reduce((a, b) => a + b, 0) / n : 0;
+        const max = n > 0 ? Math.max(...diagInferenceSamples) : 0;
+        return {
+            isMobile: IS_MOBILE,
+            inferenceAvgMs: Math.round(avg),
+            inferenceMaxMs: Math.round(max),
+            timeoutCount: diagTimeoutCount,
+            droppedFrames: diagDroppedFrames,
+            cameraFps: diagCamFps,
+            skipFrames: CONFIG.processing.skipFrames
+        };
+    }
+
     return {
         init,
         resize,
@@ -639,6 +700,7 @@ const Segmentation = (function() {
         getCoverCrop,
         getNativeVideoSize,
         setErosionAmount,
+        getDiagnostics,
         destroy,
         get isReady() { return isInitialized; }
     };
