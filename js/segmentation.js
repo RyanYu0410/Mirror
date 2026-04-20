@@ -14,6 +14,14 @@ const Segmentation = (function() {
     const IS_MOBILE = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
                       (navigator.maxTouchPoints > 1 && !/Windows/.test(navigator.userAgent));
 
+    // MediaPipe resolves its runtime files (WASM, tflite, binarypb) through the
+    // `locateFile` callback passed into each solution constructor. We point it
+    // at our self-hosted copy under ./vendor/ so the app doesn't depend on
+    // jsdelivr staying reachable for days/weeks on end. Refresh those files
+    // via `bash scripts/fetch-vendor.sh`.
+    const MP_SELFIE_BASE = 'vendor/mediapipe/selfie_segmentation/';
+    const MP_POSE_BASE   = 'vendor/mediapipe/pose/';
+
     // ==========================================
     // Configuration
     // ==========================================
@@ -332,9 +340,7 @@ const Segmentation = (function() {
             
             // Initialize MediaPipe Selfie Segmentation
             selfieSegmentation = new SelfieSegmentation({
-                locateFile: (file) => {
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`;
-                }
+                locateFile: (file) => MP_SELFIE_BASE + file
             });
             
             selfieSegmentation.setOptions(CONFIG.segmentation);
@@ -348,9 +354,7 @@ const Segmentation = (function() {
             
             // Initialize MediaPipe Pose
             pose = new Pose({
-                locateFile: (file) => {
-                    return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-                }
+                locateFile: (file) => MP_POSE_BASE + file
             });
             
             pose.setOptions(CONFIG.pose);
@@ -751,14 +755,14 @@ const Segmentation = (function() {
             try { if (pose && pose.close) await pose.close(); } catch (_) {}
 
             selfieSegmentation = new SelfieSegmentation({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+                locateFile: (file) => MP_SELFIE_BASE + file
             });
             selfieSegmentation.setOptions(CONFIG.segmentation);
             selfieSegmentation.onResults(onSegmentationResults);
             await selfieSegmentation.initialize();
 
             pose = new Pose({
-                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+                locateFile: (file) => MP_POSE_BASE + file
             });
             pose.setOptions(CONFIG.pose);
             pose.onResults(onPoseResults);

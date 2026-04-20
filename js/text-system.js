@@ -185,9 +185,13 @@ const TextSystem = (function() {
             return { x: this.x, y: this.y };
         }
 
-        applyRepulsion(force) {
-            this.velocity.x += force.x * CONFIG.collision.repulsionStrength;
-            this.velocity.y += force.y * CONFIG.collision.repulsionStrength;
+        // Scalar args only — avoids per-collision { x, y } literal allocation
+        // in the O(n²) resolveCollisions loop. At 35 active particles this
+        // was ~1200 object allocations per frame; scalars cost zero GC.
+        applyRepulsion(fx, fy) {
+            const k = CONFIG.collision.repulsionStrength;
+            this.velocity.x += fx * k;
+            this.velocity.y += fy * k;
         }
     }
 
@@ -337,8 +341,8 @@ const TextSystem = (function() {
                     const ny = dy / dist;
                     const force = overlap * 0.5;
 
-                    a.applyRepulsion({ x: -nx * force, y: -ny * force });
-                    b.applyRepulsion({ x:  nx * force, y:  ny * force });
+                    a.applyRepulsion(-nx * force, -ny * force);
+                    b.applyRepulsion( nx * force,  ny * force);
                 }
             }
         }

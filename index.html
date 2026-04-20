@@ -13,13 +13,13 @@
     <!-- Styles -->
     <link rel="stylesheet" href="style.css">
     
-    <!-- p5.js -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
-    
-    <!-- MediaPipe -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <!-- External runtimes — self-hosted under ./vendor/ so the install keeps
+         working on air-gapped networks and across CDN outages. Refresh with
+         `bash scripts/fetch-vendor.sh` to pin a newer version. -->
+    <script src="vendor/p5/p5.min.js"></script>
+    <script src="vendor/mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="vendor/mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
+    <script src="vendor/mediapipe/pose/pose.js"></script>
 </head>
 <body>
     <!-- Loading Screen -->
@@ -57,6 +57,8 @@
         <div id="hand-velocity">Hand: --</div>
         <div id="ratio-info">Ratio: --</div>
         <div id="inference-info">Inference: --</div>
+        <div id="heap-info">Heap: --</div>
+        <div id="uptime-info">Uptime: --</div>
     </div>
     
     <!-- Error Screen -->

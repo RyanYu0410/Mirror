@@ -95,9 +95,53 @@ const DOM = {
     handVelocity: null,
     ratioInfo: null,
     inferenceInfo: null,
+    heapInfo: null,
+    uptimeInfo: null,
     errorScreen: null,
     retryBtn: null
 };
+
+// Heap monitoring (Chrome-only — performance.memory is non-standard).
+// Recorded at startup and sampled periodically so we can both display
+// live usage in the debug panel and log a warning if it climbs too far
+// above the baseline (indicates a slow leak in long-running installs).
+const HEAP_WARN_GROWTH_FACTOR = 2.5;   // warn once if usage > baseline × 2.5
+const HEAP_SAMPLE_INTERVAL_MS  = 60000; // sample once a minute
+let heapBaselineBytes = 0;
+let heapPeakBytes = 0;
+let heapCurrentBytes = 0;
+let heapWarnedAt = 0;
+let heapSampleTimer = null;
+
+function sampleHeap() {
+    // performance.memory is a Chromium-only API. Gracefully degrade in
+    // Safari / Firefox by leaving the numbers at 0.
+    const mem = performance && performance.memory;
+    if (!mem || typeof mem.usedJSHeapSize !== 'number') return;
+    heapCurrentBytes = mem.usedJSHeapSize;
+    if (heapBaselineBytes === 0) heapBaselineBytes = heapCurrentBytes;
+    if (heapCurrentBytes > heapPeakBytes) heapPeakBytes = heapCurrentBytes;
+
+    // Rate-limit warnings to once per 10 min so logs don't flood.
+    const now = performance.now();
+    if (heapBaselineBytes > 0 &&
+        heapCurrentBytes > heapBaselineBytes * HEAP_WARN_GROWTH_FACTOR &&
+        now - heapWarnedAt > 10 * 60 * 1000) {
+        console.warn(
+            `[Mirror] Heap growth detected: ` +
+            `baseline ${Math.round(heapBaselineBytes / 1048576)} MB → ` +
+            `current ${Math.round(heapCurrentBytes / 1048576)} MB ` +
+            `(peak ${Math.round(heapPeakBytes / 1048576)} MB)`
+        );
+        heapWarnedAt = now;
+    }
+}
+
+function startHeapMonitor() {
+    if (heapSampleTimer) clearInterval(heapSampleTimer);
+    sampleHeap();  // baseline immediately
+    heapSampleTimer = setInterval(sampleHeap, HEAP_SAMPLE_INTERVAL_MS);
+}
 
 // ==========================================
 // Initialization
@@ -116,6 +160,8 @@ function initDOM() {
     DOM.handVelocity = Utils.$('#hand-velocity');
     DOM.ratioInfo = Utils.$('#ratio-info');
     DOM.inferenceInfo = Utils.$('#inference-info');
+    DOM.heapInfo = Utils.$('#heap-info');
+    DOM.uptimeInfo = Utils.$('#uptime-info');
     DOM.errorScreen = Utils.$('#error-screen');
     DOM.retryBtn = Utils.$('#retry-btn');
     
@@ -264,6 +310,9 @@ function sketch(p) {
         // Long-running clocks
         appStartTime = performance.now();
         lastSoftResetTime = appStartTime;
+
+        // Heap monitoring (Chrome only; no-op elsewhere)
+        startHeapMonitor();
 
         // Show debug panel
         if (AppConfig.debug) {
@@ -704,6 +753,30 @@ function updateDebugPanel() {
         DOM.inferenceInfo.style.color = d.inferenceAvgMs > budget * 0.8 ? '#ff6b6b' :
                                          d.inferenceAvgMs > budget * 0.5 ? '#ffa94d' : '';
     }
+    if (DOM.heapInfo) {
+        if (heapCurrentBytes > 0) {
+            const cur  = Math.round(heapCurrentBytes / 1048576);
+            const peak = Math.round(heapPeakBytes    / 1048576);
+            const base = Math.round(heapBaselineBytes / 1048576);
+            const delta = cur - base;
+            const deltaStr = delta >= 0 ? `+${delta}` : `${delta}`;
+            DOM.heapInfo.textContent = `Heap ${cur}MB (base ${base} ${deltaStr}, peak ${peak})`;
+            // Red if heap has grown > 2.5× baseline
+            DOM.heapInfo.style.color =
+                heapCurrentBytes > heapBaselineBytes * HEAP_WARN_GROWTH_FACTOR ? '#ff6b6b' :
+                heapCurrentBytes > heapBaselineBytes * 1.8 ? '#ffa94d' : '';
+        } else {
+            DOM.heapInfo.textContent = 'Heap: n/a (non-Chromium)';
+        }
+    }
+    if (DOM.uptimeInfo) {
+        const ms = performance.now() - appStartTime;
+        const h = Math.floor(ms / 3600000);
+        const m = Math.floor((ms % 3600000) / 60000);
+        const s = Math.floor((ms %   60000) /   1000);
+        DOM.uptimeInfo.textContent =
+            `Uptime ${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`;
+    }
 }
 
 // ==========================================
@@ -728,7 +801,15 @@ window.SoftMirror = {
     softReset: performSoftReset,
     hardReload: () => location.reload(),
     getUptime: () => performance.now() - appStartTime,
-    recoverCanvases                 // force a canvas rebuild for debugging
+    recoverCanvases,                // force a canvas rebuild for debugging
+    getHeap: () => ({
+        baselineMB: Math.round(heapBaselineBytes / 1048576),
+        currentMB:  Math.round(heapCurrentBytes  / 1048576),
+        peakMB:     Math.round(heapPeakBytes     / 1048576),
+        growthX:    heapBaselineBytes
+            ? +(heapCurrentBytes / heapBaselineBytes).toFixed(2)
+            : 0
+    })
 };
 
 
