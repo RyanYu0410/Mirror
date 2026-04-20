@@ -117,10 +117,6 @@ const TextSystem = (function() {
             
             // Collision
             this.velocity = { x: 0, y: 0 };
-            
-            // Measure text width (will be set in draw)
-            this.width = 0;
-            this.height = this.fontSize;
         }
 
         update(deltaTime, time) {
@@ -170,9 +166,6 @@ const TextSystem = (function() {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             
-            // Measure width for collision
-            this.width = ctx.measureText(this.text).width;
-            
             // Glow effect
             ctx.shadowColor = this.color;
             ctx.shadowBlur = this.isFast ? 20 : 12;
@@ -190,10 +183,6 @@ const TextSystem = (function() {
 
         getCenter() {
             return { x: this.x, y: this.y };
-        }
-
-        getRadius() {
-            return Math.max(this.width, this.height) / 2;
         }
 
         applyRepulsion(force) {
@@ -328,27 +317,28 @@ const TextSystem = (function() {
 
     function resolveCollisions() {
         if (!CONFIG.collision.enabled) return;
-        
+
+        const minDist = CONFIG.collision.minDistance;
+        const minDistSq = minDist * minDist;
+
         for (let i = 0; i < particles.length; i++) {
+            const a = particles[i];
             for (let j = i + 1; j < particles.length; j++) {
-                const a = particles[i];
                 const b = particles[j];
-                
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const minDist = CONFIG.collision.minDistance;
-                
-                if (dist < minDist && dist > 0) {
-                    // Overlap - apply repulsion
+                const distSq = dx * dx + dy * dy;
+
+                // Cheap squared-distance reject; only sqrt on actual overlap.
+                if (distSq < minDistSq && distSq > 0) {
+                    const dist = Math.sqrt(distSq);
                     const overlap = minDist - dist;
                     const nx = dx / dist;
                     const ny = dy / dist;
-                    
                     const force = overlap * 0.5;
-                    
+
                     a.applyRepulsion({ x: -nx * force, y: -ny * force });
-                    b.applyRepulsion({ x: nx * force, y: ny * force });
+                    b.applyRepulsion({ x:  nx * force, y:  ny * force });
                 }
             }
         }

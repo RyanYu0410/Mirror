@@ -187,9 +187,8 @@ html, body {
     opacity: 1;
 }
 
-/* Debug Panel */
+/* Debug Panel (initial .hidden class in HTML keeps it hidden; press D to toggle) */
 #debug-panel {
-    display: none; /* Toggled via .hidden class from JS; press D to show */
     position: fixed;
     top: 1rem;
     left: 1rem;

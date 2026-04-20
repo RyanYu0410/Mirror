@@ -9,15 +9,31 @@ const Utils = (function() {
     // ==========================================
     // Perlin Noise Implementation
     // ==========================================
-    
-    const perlinGradients = {};
-    let perlinSeed = Math.random() * 10000;
+    // Classic Ken-Perlin 256-entry permutation table.
+    // Bounded memory (no cache growth) and faster than the previous
+    // string-keyed gradient cache.
+
+    const perlinPerm = new Uint8Array(512);
+
+    function buildPermutation(seed) {
+        // Fill 0..255 then Fisher–Yates shuffle with a seeded LCG
+        const base = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) base[i] = i;
+        let s = (seed | 0) || 1;
+        for (let i = 255; i > 0; i--) {
+            // LCG: Numerical Recipes constants
+            s = (s * 1664525 + 1013904223) | 0;
+            const j = (s >>> 0) % (i + 1);
+            const tmp = base[i]; base[i] = base[j]; base[j] = tmp;
+        }
+        // Duplicate so indexing perm[x+1] never overflows
+        for (let i = 0; i < 512; i++) perlinPerm[i] = base[i & 255];
+    }
+
+    buildPermutation(Math.floor(Math.random() * 2147483647));
 
     function setNoiseSeed(seed) {
-        perlinSeed = seed;
-        for (let key in perlinGradients) {
-            delete perlinGradients[key];
-        }
+        buildPermutation(seed);
     }
 
     function fade(t) {
@@ -35,33 +51,23 @@ const Utils = (function() {
         return ((h & 1) ? -u : u) + ((h & 2) ? -2 * v : 2 * v);
     }
 
-    function getGradient(x, y) {
-        const key = `${x},${y}`;
-        if (!perlinGradients[key]) {
-            const random = Math.sin(x * 12.9898 + y * 78.233 + perlinSeed) * 43758.5453;
-            perlinGradients[key] = (random - Math.floor(random)) * 255 | 0;
-        }
-        return perlinGradients[key];
-    }
-
     function noise2D(x, y) {
         const X = Math.floor(x) & 255;
         const Y = Math.floor(y) & 255;
-        
+
         x -= Math.floor(x);
         y -= Math.floor(y);
-        
+
         const u = fade(x);
         const v = fade(y);
-        
-        const aa = getGradient(X, Y);
-        const ab = getGradient(X, Y + 1);
-        const ba = getGradient(X + 1, Y);
-        const bb = getGradient(X + 1, Y + 1);
-        
+
+        const p = perlinPerm;
+        const A = p[X] + Y;
+        const B = p[X + 1] + Y;
+
         return lerp(
-            lerp(grad(aa, x, y), grad(ba, x - 1, y), u),
-            lerp(grad(ab, x, y - 1), grad(bb, x - 1, y - 1), u),
+            lerp(grad(p[A],     x,     y),     grad(p[B],     x - 1, y),     u),
+            lerp(grad(p[A + 1], x,     y - 1), grad(p[B + 1], x - 1, y - 1), u),
             v
         );
     }

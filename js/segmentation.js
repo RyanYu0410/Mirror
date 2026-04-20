@@ -335,64 +335,21 @@ const Segmentation = (function() {
             bodyParts = {};
             return;
         }
-        
+
         const landmarks = results.poseLandmarks;
         const w = frameCanvas.width;
         const h = frameCanvas.height;
-        
-        // Extract key body parts
+
+        // Only the 4 landmarks consumed downstream (text-system hand triggering
+        // + hand-velocity calculation). Extracting fewer points keeps landmark
+        // conversion cheap per frame.
         bodyParts = {
-            // Head
-            nose: landmarkToPoint(landmarks[0], w, h),
-            leftEye: landmarkToPoint(landmarks[2], w, h),
-            rightEye: landmarkToPoint(landmarks[5], w, h),
-            leftEar: landmarkToPoint(landmarks[7], w, h),
-            rightEar: landmarkToPoint(landmarks[8], w, h),
-            
-            // Upper body
-            leftShoulder: landmarkToPoint(landmarks[11], w, h),
-            rightShoulder: landmarkToPoint(landmarks[12], w, h),
-            leftElbow: landmarkToPoint(landmarks[13], w, h),
-            rightElbow: landmarkToPoint(landmarks[14], w, h),
-            leftWrist: landmarkToPoint(landmarks[15], w, h),
+            leftWrist:  landmarkToPoint(landmarks[15], w, h),
             rightWrist: landmarkToPoint(landmarks[16], w, h),
-            
-            // Hands (approximated from wrist + direction)
-            leftHand: landmarkToPoint(landmarks[19], w, h), // left index
-            rightHand: landmarkToPoint(landmarks[20], w, h), // right index
-            
-            // Fingers
-            leftPinky: landmarkToPoint(landmarks[17], w, h),
-            rightPinky: landmarkToPoint(landmarks[18], w, h),
-            leftIndex: landmarkToPoint(landmarks[19], w, h),
-            rightIndex: landmarkToPoint(landmarks[20], w, h),
-            leftThumb: landmarkToPoint(landmarks[21], w, h),
-            rightThumb: landmarkToPoint(landmarks[22], w, h),
-            
-            // Torso
-            leftHip: landmarkToPoint(landmarks[23], w, h),
-            rightHip: landmarkToPoint(landmarks[24], w, h)
+            leftHand:   landmarkToPoint(landmarks[19], w, h), // left index tip
+            rightHand:  landmarkToPoint(landmarks[20], w, h)  // right index tip
         };
-        
-        // Calculate chest center
-        if (bodyParts.leftShoulder && bodyParts.rightShoulder && 
-            bodyParts.leftHip && bodyParts.rightHip) {
-            bodyParts.chest = {
-                x: (bodyParts.leftShoulder.x + bodyParts.rightShoulder.x + 
-                    bodyParts.leftHip.x + bodyParts.rightHip.x) / 4,
-                y: (bodyParts.leftShoulder.y + bodyParts.rightShoulder.y) / 2
-            };
-        }
-        
-        // Calculate head center
-        if (bodyParts.nose && bodyParts.leftEar && bodyParts.rightEar) {
-            bodyParts.head = {
-                x: bodyParts.nose.x,
-                y: (bodyParts.nose.y + bodyParts.leftEar.y + bodyParts.rightEar.y) / 3 - 20
-            };
-        }
-        
-        // Update hand velocities
+
         updateHandVelocity();
     }
 
@@ -526,7 +483,7 @@ const Segmentation = (function() {
     
     function orderContourPointsFast(points) {
         if (points.length < 3) return points;
-        
+
         // Find center
         let cx = 0, cy = 0;
         for (const p of points) {
@@ -535,15 +492,16 @@ const Segmentation = (function() {
         }
         cx /= points.length;
         cy /= points.length;
-        
-        // Sort by angle from center
-        points.sort((a, b) => {
-            const angleA = Math.atan2(a.y - cy, a.x - cx);
-            const angleB = Math.atan2(b.y - cy, b.x - cx);
-            return angleA - angleB;
-        });
-        
-        // Light smoothing
+
+        // Precompute atan2 once per point (comparator used to call it twice per
+        // comparison → O(n log n) atan2 calls; now O(n)).
+        for (const p of points) {
+            p._angle = Math.atan2(p.y - cy, p.x - cx);
+        }
+        points.sort((a, b) => a._angle - b._angle);
+
+        // Light smoothing (smoothPath allocates new point objects, so the
+        // temporary _angle field does not leak into the returned contour).
         return Utils.smoothPath(points, 1);
     }
 

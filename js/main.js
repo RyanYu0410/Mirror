@@ -401,16 +401,8 @@ function render(p, time) {
     const handVelocity = Segmentation.getHandVelocity();
     
     // Update subsystems
-    // Particles.update(time);
     Effects.update(time);
     TextSystem.update(deltaTime, time, handVelocity, bodyParts, contour);
-    
-    // Add sparkles near hands on fast movement (DISABLED)
-    /*
-    if (handVelocity.max > 20 && Math.random() < 0.3) {
-        Particles.addSparkleNearHand(bodyParts, 2);
-    }
-    */
     
     // ==========================================
     // Layer 1: Background Trail + Solid Black Background + Human Figure
