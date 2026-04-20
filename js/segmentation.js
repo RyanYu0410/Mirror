@@ -123,6 +123,10 @@ const Segmentation = (function() {
     let consecutiveTimeouts = 0;
     const CONSECUTIVE_TIMEOUT_LIMIT = 5;
     let isReiniting = false;            // re-entrancy guard for reinitModels
+    // Count of consecutive reinitModels() failures. main.js's installation
+    // watchdog escalates to a full page reload once this crosses a threshold
+    // (WASM heap fragmentation on iOS Safari makes reinit unrecoverable).
+    let reinitFailures = 0;
     
     let previousHandPositions = { left: null, right: null };
     let isInitialized = false;
@@ -314,10 +318,24 @@ const Segmentation = (function() {
         try {
             updateProgress(0, 'Creating video element...');
             
-            // Create video element
+            // Create video element.
+            // NOTE: `display: none` is known to stall getUserMedia on iOS
+            // Safari — the video element must remain "rendered" for the
+            // camera stream to keep delivering frames. Position it 1×1 and
+            // fully transparent off-screen so it's invisible but live.
             videoElement = document.createElement('video');
             videoElement.setAttribute('playsinline', '');
-            videoElement.style.display = 'none';
+            videoElement.setAttribute('autoplay', '');
+            videoElement.setAttribute('muted', '');
+            videoElement.muted = true;
+            videoElement.style.position = 'fixed';
+            videoElement.style.left = '0';
+            videoElement.style.top = '0';
+            videoElement.style.width = '2px';
+            videoElement.style.height = '2px';
+            videoElement.style.opacity = '0.001';
+            videoElement.style.pointerEvents = 'none';
+            videoElement.style.zIndex = '-1';
             document.body.appendChild(videoElement);
             
             // Create processing canvases
@@ -779,9 +797,11 @@ const Segmentation = (function() {
             lastFrameTimestamp = performance.now();
             consecutiveTimeouts = 0;
             diagInferenceSamples.length = 0;
+            reinitFailures = 0;
             console.log('[Mirror] Models re-initialized successfully');
         } catch (err) {
-            console.error('[Mirror] Model re-init failed:', err);
+            reinitFailures++;
+            console.error(`[Mirror] Model re-init failed (#${reinitFailures}):`, err);
         } finally {
             isReiniting = false;
         }
@@ -832,7 +852,12 @@ const Segmentation = (function() {
             timeoutCount: diagTimeoutCount,
             droppedFrames: diagDroppedFrames,
             cameraFps: diagCamFps,
-            skipFrames: CONFIG.processing.skipFrames
+            skipFrames: CONFIG.processing.skipFrames,
+            reinitFailures,
+            consecutiveTimeouts,
+            cameraRestartFailures,
+            lastFrameAgeMs: lastFrameTimestamp
+                ? Math.round(performance.now() - lastFrameTimestamp) : -1
         };
     }
 

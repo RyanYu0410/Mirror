@@ -97,6 +97,7 @@ const DOM = {
     inferenceInfo: null,
     heapInfo: null,
     uptimeInfo: null,
+    installHud: null,
     errorScreen: null,
     retryBtn: null
 };
@@ -144,6 +145,228 @@ function startHeapMonitor() {
 }
 
 // ==========================================
+// Installation Watchdog — iPad-hardened self-recovery
+// ==========================================
+// Five independent safety nets layered on top of the render-loop logic.
+// Everything here runs off plain setInterval timers, NOT the p5 draw loop,
+// so it keeps working even if rAF is throttled, the state machine wedges,
+// the GPU context is lost, or the main thread stalls.
+//
+//   1. Independent hard-reload timer  — reloads on schedule even if the
+//                                       state-machine-gated reset in
+//                                       maybeScheduledReset() never runs.
+//   2. Pixel liveness sampler         — getImageData on a few fixed points
+//                                       every 10 s. 3 identical samples in
+//                                       a row (~30 s) = canvas is frozen
+//                                       (Safari GPU context loss, etc.) →
+//                                       reload. This is the iPad killer.
+//   3. ERROR-state auto-reload        — don't let a transient camera hiccup
+//                                       leave the install stuck behind a
+//                                       "Try Again" button forever.
+//   4. Reinit-failure escalation      — if MediaPipe models fail to re-init
+//                                       ≥ 3 times in a row the WASM heap
+//                                       is wedged; only a full reload helps.
+//   5. Unhandled-error storm          — N uncaught errors/rejections in a
+//                                       row trips a reload.
+//
+// Screen Wake Lock is requested alongside (and re-requested on visibility
+// change) so iOS does not put the display to sleep mid-session.
+
+const INSTALL_RELOAD_CHECK_MS      = 60 * 1000;       // poll every minute
+const INSTALL_LIVENESS_SAMPLE_MS   = 10 * 1000;       // sample pixels every 10 s
+const INSTALL_LIVENESS_STALL_LIMIT = 3;               // 3 identical → ~30 s dead
+const INSTALL_ERROR_AUTO_RELOAD_MS = 20 * 1000;       // auto-reload after 20 s in ERROR
+const INSTALL_UNHANDLED_ERR_LIMIT  = 15;              // unhandled errors before reload
+const INSTALL_REINIT_FAIL_LIMIT    = 3;               // MediaPipe reinit failures before reload
+// Safari has no performance.memory, but if we're on Chromium and heap has
+// ballooned past this factor it's safer to reload early than to wait for
+// the scheduled 24 h reload and risk a tab kill.
+const INSTALL_HEAP_EARLY_RELOAD_X  = 3.0;
+const INSTALL_MIN_UPTIME_FOR_HEAP_RELOAD_MS = 60 * 60 * 1000;
+
+let installReloadTimer       = null;
+let installLivenessTimer     = null;
+let installLastSig           = '';
+let installIdenticalSamples  = 0;
+let installErrorEnteredAt    = 0;
+let installUnhandledErrCount = 0;
+let installReloading         = false;
+let wakeLockSentinel         = null;
+let installHudFrameCounter   = 0;
+
+function triggerReload(reason) {
+    if (installReloading) return;
+    installReloading = true;
+    console.warn(`[Mirror] Installation watchdog reloading: ${reason}`);
+    try { if (wakeLockSentinel) wakeLockSentinel.release(); } catch (_) {}
+    // Small delay gives the warn log a chance to flush to devtools before
+    // the page goes away; 250 ms is imperceptible for an installation.
+    setTimeout(() => {
+        try { location.reload(); } catch (_) {}
+    }, 250);
+}
+
+// Sample 6 points across the composite canvas and return a stable
+// signature. Returns null if we can't read (canvas not ready or
+// getImageData throws — e.g. tainted, context lost).
+function sampleCanvasSignature() {
+    if (!compositeCanvas || !compositeCtx) return null;
+    const w = compositeCanvas.width, h = compositeCanvas.height;
+    if (w < 10 || h < 10) return null;
+    const xs = [w * 0.1 | 0, w * 0.5 | 0, w * 0.9 | 0];
+    const ys = [h * 0.1 | 0, h * 0.5 | 0, h * 0.9 | 0];
+    try {
+        let sig = '';
+        let allBlack = true;
+        for (const y of ys) for (const x of xs) {
+            const d = compositeCtx.getImageData(x, y, 1, 1).data;
+            sig += `${d[0]},${d[1]},${d[2]};`;
+            if (d[0] > 3 || d[1] > 3 || d[2] > 3) allBlack = false;
+        }
+        return { sig, allBlack };
+    } catch (_) {
+        // getImageData can throw when the context is lost — treat that as
+        // an immediate liveness failure.
+        return { sig: '__UNREADABLE__', allBlack: true };
+    }
+}
+
+function checkCanvasLiveness() {
+    // Skip while the tab is backgrounded (frames legitimately stop) and
+    // during states where composite is not drawn.
+    if (document.hidden) { installIdenticalSamples = 0; return; }
+    if (currentState === AppState.LOADING ||
+        currentState === AppState.ERROR) { installIdenticalSamples = 0; return; }
+
+    const result = sampleCanvasSignature();
+    if (!result) return;
+
+    if (result.sig === installLastSig) {
+        installIdenticalSamples++;
+        if (installIdenticalSamples >= INSTALL_LIVENESS_STALL_LIMIT) {
+            triggerReload(
+                result.sig === '__UNREADABLE__'
+                    ? 'canvas context unreadable (likely GPU context loss)'
+                    : result.allBlack
+                        ? 'canvas frozen + all-black (GPU context loss)'
+                        : 'canvas frozen (~30 s no pixel change)'
+            );
+        }
+    } else {
+        installIdenticalSamples = 0;
+        installLastSig = result.sig;
+    }
+}
+
+function checkScheduledReload() {
+    if (document.hidden) return;
+    const uptime = performance.now() - appStartTime;
+
+    // Scheduled hard reload (independent backup to the state-machine-gated
+    // path in maybeScheduledReset). Whichever fires first wins.
+    const limit = AppConfig.longRunning.hardReloadIntervalMs;
+    if (limit > 0 && uptime >= limit) {
+        triggerReload(`scheduled hard-reload @ ${Math.round(uptime / 3600000)}h uptime`);
+        return;
+    }
+
+    // Heap-triggered early reload (Chromium only).
+    if (heapBaselineBytes > 0 &&
+        heapCurrentBytes > heapBaselineBytes * INSTALL_HEAP_EARLY_RELOAD_X &&
+        uptime > INSTALL_MIN_UPTIME_FOR_HEAP_RELOAD_MS) {
+        triggerReload(
+            `heap ${Math.round(heapCurrentBytes/1048576)}MB ` +
+            `> ${INSTALL_HEAP_EARLY_RELOAD_X}× baseline ` +
+            `${Math.round(heapBaselineBytes/1048576)}MB`
+        );
+        return;
+    }
+
+    // MediaPipe reinit storm — WASM runtime can't recover, only reload helps.
+    if (typeof Segmentation !== 'undefined' && Segmentation.getDiagnostics) {
+        const d = Segmentation.getDiagnostics();
+        if (d.reinitFailures >= INSTALL_REINIT_FAIL_LIMIT) {
+            triggerReload(`MediaPipe reinit failed ×${d.reinitFailures}`);
+            return;
+        }
+    }
+}
+
+function checkErrorAutoReload() {
+    if (currentState !== AppState.ERROR) {
+        installErrorEnteredAt = 0;
+        return;
+    }
+    const now = performance.now();
+    if (installErrorEnteredAt === 0) {
+        installErrorEnteredAt = now;
+        return;
+    }
+    if (now - installErrorEnteredAt >= INSTALL_ERROR_AUTO_RELOAD_MS) {
+        triggerReload(
+            `stuck in ERROR for ${Math.round((now - installErrorEnteredAt)/1000)}s`
+        );
+    }
+}
+
+async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', () => {
+            wakeLockSentinel = null;
+        });
+        console.log('[Mirror] Screen Wake Lock acquired');
+    } catch (err) {
+        // Rejected on Safari < 16.4, HTTP pages, or in low power mode.
+        console.warn('[Mirror] Wake Lock unavailable:', err && err.name);
+    }
+}
+
+function startInstallationWatchdog() {
+    if (installReloadTimer)   clearInterval(installReloadTimer);
+    if (installLivenessTimer) clearInterval(installLivenessTimer);
+
+    installReloadTimer = setInterval(() => {
+        checkScheduledReload();
+        checkErrorAutoReload();
+    }, INSTALL_RELOAD_CHECK_MS);
+
+    installLivenessTimer = setInterval(checkCanvasLiveness, INSTALL_LIVENESS_SAMPLE_MS);
+
+    window.addEventListener('error', (e) => {
+        installUnhandledErrCount++;
+        console.warn(
+            `[Mirror] Unhandled error #${installUnhandledErrCount}:`,
+            e && (e.message || e.error)
+        );
+        if (installUnhandledErrCount >= INSTALL_UNHANDLED_ERR_LIMIT) {
+            triggerReload(`unhandled error storm (${installUnhandledErrCount})`);
+        }
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+        installUnhandledErrCount++;
+        console.warn(
+            `[Mirror] Unhandled rejection #${installUnhandledErrCount}:`,
+            e && e.reason
+        );
+        if (installUnhandledErrCount >= INSTALL_UNHANDLED_ERR_LIMIT) {
+            triggerReload(`unhandled rejection storm (${installUnhandledErrCount})`);
+        }
+    });
+
+    requestWakeLock();
+    document.addEventListener('visibilitychange', () => {
+        // Wake Lock auto-releases when page is hidden; re-request on return.
+        if (!document.hidden) requestWakeLock();
+    });
+
+    // Prime the HUD right away so it shows live numbers instead of the
+    // "booting…" placeholder even before the first p5 draw call.
+    updateInstallHUD();
+}
+
+// ==========================================
 // Initialization
 // ==========================================
 
@@ -162,6 +385,7 @@ function initDOM() {
     DOM.inferenceInfo = Utils.$('#inference-info');
     DOM.heapInfo = Utils.$('#heap-info');
     DOM.uptimeInfo = Utils.$('#uptime-info');
+    DOM.installHud = Utils.$('#install-hud');
     DOM.errorScreen = Utils.$('#error-screen');
     DOM.retryBtn = Utils.$('#retry-btn');
     
@@ -171,6 +395,10 @@ function initDOM() {
         if (e.key === 'd' || e.key === 'D') {
             AppConfig.debug = !AppConfig.debug;
             DOM.debugPanel.classList.toggle('hidden', !AppConfig.debug);
+        }
+        // H - Toggle the always-on corner HUD
+        if (e.key === 'h' || e.key === 'H') {
+            if (DOM.installHud) DOM.installHud.classList.toggle('hidden-hud');
         }
         // 1 - Toggle video mirror
         if (e.key === '1') {
@@ -314,6 +542,11 @@ function sketch(p) {
         // Heap monitoring (Chrome only; no-op elsewhere)
         startHeapMonitor();
 
+        // Long-running self-recovery watchdog (see top of file for details).
+        // Runs independently of the render loop so it works even when p5
+        // has been throttled or the state machine has wedged.
+        startInstallationWatchdog();
+
         // Show debug panel
         if (AppConfig.debug) {
             DOM.debugPanel.classList.remove('hidden');
@@ -341,6 +574,13 @@ function sketch(p) {
         // Update debug panel
         if (AppConfig.debug) {
             updateDebugPanel();
+        }
+
+        // HUD updates at ~1 Hz so getDiagnostics cost is negligible.
+        installHudFrameCounter++;
+        if (installHudFrameCounter >= AppConfig.canvas.targetFPS) {
+            installHudFrameCounter = 0;
+            updateInstallHUD();
         }
     };
     
@@ -779,6 +1019,47 @@ function updateDebugPanel() {
     }
 }
 
+// Always-on installation HUD — dense but small. Designed so that if the
+// iPad freezes, a phone photo of the screen is enough to diagnose which
+// subsystem died. One line if possible; two on tiny screens.
+function updateInstallHUD() {
+    if (!DOM.installHud) return;
+
+    const uptimeMs = performance.now() - appStartTime;
+    const uh = Math.floor(uptimeMs / 3600000);
+    const um = Math.floor((uptimeMs % 3600000) / 60000);
+
+    const fps = fpsCounter ? fpsCounter.getFPS() : 0;
+
+    let camFps = 0, infAvg = 0, to = 0, skip = 0, reinitF = 0, frameAge = -1;
+    if (typeof Segmentation !== 'undefined' && Segmentation.getDiagnostics) {
+        const d = Segmentation.getDiagnostics();
+        camFps  = d.cameraFps;
+        infAvg  = d.inferenceAvgMs;
+        to      = d.timeoutCount;
+        skip    = d.skipFrames;
+        reinitF = d.reinitFailures || 0;
+        frameAge = d.lastFrameAgeMs;
+    }
+
+    const heapStr = heapCurrentBytes > 0
+        ? `${Math.round(heapCurrentBytes / 1048576)}M`
+        : '-';
+
+    // One-letter state: L/E/T/M/X.
+    const stShort = (currentState || '?')[0];
+
+    // Age of the last camera frame in seconds — useful sanity check that
+    // "camFps" isn't just stale.
+    const ageStr = frameAge >= 0 ? `${(frameAge / 1000).toFixed(1)}s` : '-';
+
+    DOM.installHud.textContent =
+        `${uh}h${String(um).padStart(2, '0')}  ` +
+        `${fps}fps cam${camFps} age${ageStr}  ` +
+        `inf${infAvg}ms skip${skip} to${to} ri${reinitF}  ` +
+        `heap${heapStr} err${installUnhandledErrCount} [${stShort}]`;
+}
+
 // ==========================================
 // Start Application
 // ==========================================
@@ -797,11 +1078,25 @@ window.SoftMirror = {
         AppConfig.debug = !AppConfig.debug;
         DOM.debugPanel.classList.toggle('hidden', !AppConfig.debug);
     },
+    toggleHUD: () => {
+        if (DOM.installHud) DOM.installHud.classList.toggle('hidden-hud');
+    },
     // Long-running operator controls
     softReset: performSoftReset,
     hardReload: () => location.reload(),
     getUptime: () => performance.now() - appStartTime,
     recoverCanvases,                // force a canvas rebuild for debugging
+    // Installation watchdog introspection (for remote ops via console)
+    triggerReload,
+    getWatchdogState: () => ({
+        uptimeMs:            performance.now() - appStartTime,
+        identicalSamples:    installIdenticalSamples,
+        unhandledErrors:     installUnhandledErrCount,
+        errorStateDurationMs: installErrorEnteredAt
+            ? performance.now() - installErrorEnteredAt : 0,
+        wakeLockHeld:        !!wakeLockSentinel,
+        reloading:           installReloading
+    }),
     getHeap: () => ({
         baselineMB: Math.round(heapBaselineBytes / 1048576),
         currentMB:  Math.round(heapCurrentBytes  / 1048576),
