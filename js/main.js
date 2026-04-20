@@ -27,8 +27,24 @@ const AppConfig = {
         video: false,   // flip the raw camera feed horizontally
         mask: true      // flip the segmentation mask to match
     },
+    // Long-running installation safety. All intervals are checked lazily
+    // at state transitions so the reset is invisible (happens during
+    // TRANSITION state cross-fade).
+    longRunning: {
+        // Soft reset: clear trails/particles/diagnostics counters.
+        // Cheap, runs every 6 h to keep subsystems "young".
+        softResetIntervalMs: 6 * 3600 * 1000,
+        // Hard reload: full page reload. Nuclear option to shed any slow
+        // drift (MediaPipe WASM heap, canvas driver state, etc.).
+        // Set to 0 to disable.
+        hardReloadIntervalMs: 24 * 3600 * 1000
+    },
     debug: false        // press D to toggle debug panel at runtime
 };
+
+// Runtime state for the long-running safety checks above.
+let lastSoftResetTime = 0;
+let appStartTime = 0;
 
 // ==========================================
 // App States
@@ -145,12 +161,70 @@ function initCanvases(width, height) {
         compositeCtx = compositeCanvas.getContext('2d');
         humanCanvas = Utils.createOffscreenCanvas(width, height);
         humanCtx = humanCanvas.getContext('2d');
+
+        attachContextLossHandlers();
     } else {
         // Subsequent calls (window resize): resize in-place to avoid GC churn
         compositeCanvas.width = width;
         compositeCanvas.height = height;
         humanCanvas.width = width;
         humanCanvas.height = height;
+    }
+}
+
+// ==========================================
+// Canvas context-loss recovery
+// ==========================================
+// Modern Chrome/Edge fire `contextlost` / `contextrestored` on 2D canvases
+// under GPU memory pressure or driver resets. Safari does not fire them
+// but also rarely loses a 2D context; best effort is all we can do here.
+// Losing the context leaves the canvas blank forever until rebuilt.
+
+let contextRecoveryInProgress = false;
+
+function attachContextLossHandlers() {
+    const targets = [
+        { canvas: compositeCanvas, name: 'composite' },
+        { canvas: humanCanvas,     name: 'human' }
+    ];
+    // p5 wraps the main canvas — .elt is the underlying HTMLCanvasElement.
+    if (mainCanvas && mainCanvas.elt) {
+        targets.push({ canvas: mainCanvas.elt, name: 'main' });
+    }
+
+    for (const { canvas, name } of targets) {
+        // Preventing default on contextlost tells the browser to try to
+        // restore the context instead of permanently losing it.
+        canvas.addEventListener('contextlost', (e) => {
+            console.warn(`[Mirror] ${name} canvas context lost`);
+            e.preventDefault();
+        });
+        canvas.addEventListener('contextrestored', () => {
+            console.warn(`[Mirror] ${name} canvas context restored — rebuilding`);
+            recoverCanvases();
+        });
+    }
+}
+
+function recoverCanvases() {
+    if (contextRecoveryInProgress) return;
+    contextRecoveryInProgress = true;
+    try {
+        const w = AppConfig.canvas.width;
+        const h = AppConfig.canvas.height;
+
+        // Force re-allocation of backing stores by nulling and reinit.
+        compositeCanvas = null;
+        humanCanvas = null;
+        initCanvases(w, h);
+
+        // Effects subsystem allocates its own ring-buffer canvases; tell
+        // it to drop + rebuild them at the current size.
+        if (typeof Effects !== 'undefined' && Effects.resize) {
+            Effects.resize(w, h);
+        }
+    } finally {
+        contextRecoveryInProgress = false;
     }
 }
 
@@ -186,7 +260,11 @@ function sketch(p) {
         
         // Initialize FPS counter
         fpsCounter = new Utils.FPSCounter();
-        
+
+        // Long-running clocks
+        appStartTime = performance.now();
+        lastSoftResetTime = appStartTime;
+
         // Show debug panel
         if (AppConfig.debug) {
             DOM.debugPanel.classList.remove('hidden');
@@ -327,7 +405,7 @@ function setState(newState) {
     previousState = currentState;
     currentState = newState;
     stateStartTime = performance.now();
-    
+
     // Update mode indicator
     switch (newState) {
         case AppState.EFFECT:
@@ -336,11 +414,51 @@ function setState(newState) {
             break;
         case AppState.TRANSITION:
             if (DOM.modeText) DOM.modeText.textContent = 'TRANSITIONING...';
+            // Opportunistic long-running hygiene — the TRANSITION cross-fade
+            // visually masks the reset so users never notice.
+            maybeScheduledReset();
             break;
         case AppState.MIRROR:
             if (DOM.modeText) DOM.modeText.textContent = 'CALM MIRROR';
             Effects.setMode('calm');
             break;
+    }
+}
+
+// Check whether a soft reset or hard reload is due, and execute it
+// during TRANSITION (where visual disruption is hidden by the cross-fade).
+function maybeScheduledReset() {
+    const now = performance.now();
+    const uptime = now - appStartTime;
+    const cfg = AppConfig.longRunning;
+
+    // Hard reload has priority — it supersedes soft reset for that cycle.
+    if (cfg.hardReloadIntervalMs > 0 && uptime >= cfg.hardReloadIntervalMs) {
+        console.log(`[Mirror] Scheduled hard reload after ${Math.round(uptime / 3600000)}h uptime`);
+        // Give the TRANSITION fade ~1s to paint, then reload.
+        setTimeout(() => location.reload(), 1000);
+        return;
+    }
+
+    if (now - lastSoftResetTime >= cfg.softResetIntervalMs) {
+        console.log(
+            `[Mirror] Scheduled soft reset ` +
+            `(uptime ${Math.round(uptime / 3600000 * 10) / 10}h)`
+        );
+        performSoftReset();
+        lastSoftResetTime = now;
+    }
+}
+
+// Soft reset: clear accumulated visual/diagnostic state without touching
+// the camera or MediaPipe models. Cheap, runs in a frame or two.
+function performSoftReset() {
+    try {
+        if (typeof Effects !== 'undefined' && Effects.softReset) Effects.softReset();
+        if (typeof TextSystem !== 'undefined' && TextSystem.clear) TextSystem.clear();
+        if (typeof Segmentation !== 'undefined' && Segmentation.softReset) Segmentation.softReset();
+    } catch (err) {
+        console.warn('[Mirror] Soft reset encountered an error:', err);
     }
 }
 
@@ -605,7 +723,12 @@ window.SoftMirror = {
     toggleDebug: () => {
         AppConfig.debug = !AppConfig.debug;
         DOM.debugPanel.classList.toggle('hidden', !AppConfig.debug);
-    }
+    },
+    // Long-running operator controls
+    softReset: performSoftReset,
+    hardReload: () => location.reload(),
+    getUptime: () => performance.now() - appStartTime,
+    recoverCanvases                 // force a canvas rebuild for debugging
 };
 
 

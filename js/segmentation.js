@@ -58,6 +58,20 @@ const Segmentation = (function() {
     // Camera still captures at full fps so the displayed image stays smooth.
     if (IS_MOBILE) CONFIG.processing.skipFrames = 2;
 
+    // Baseline skipFrames is the floor the adaptive controller will not
+    // drop below (i.e. "best possible" for this device class).
+    const BASELINE_SKIP_FRAMES = CONFIG.processing.skipFrames;
+    // Hard ceiling so a runaway thermal event cannot push us to 1 fps.
+    const MAX_SKIP_FRAMES = IS_MOBILE ? 5 : 3;
+    // Per-device target inference time. Exceeding 1.5× this for a few
+    // samples triggers an increment; falling below 0.5× triggers a
+    // decrement back toward the baseline.
+    const TARGET_INFERENCE_MS = IS_MOBILE ? 180 : 80;
+    // How many inference iterations between adaptive adjustments.
+    // Too fast → oscillation, too slow → late to react to thermal trends.
+    const ADAPT_COOLDOWN_ITERS = 10;
+    let lastAdaptIter = 0;
+
     // ==========================================
     // State
     // ==========================================
@@ -85,6 +99,22 @@ const Segmentation = (function() {
     let isRestarting = false;           // re-entrancy guard for restartCamera
     const WATCHDOG_INTERVAL_MS = 4000;  // check every 4 s
     const WATCHDOG_STALL_MS   = 8000;  // restart if no frame for 8 s
+
+    // Exponential backoff for camera restart failures.
+    // Doubles each failure, capped, so a permanently-broken camera
+    // does not busy-loop the watchdog forever.
+    let cameraRestartFailures = 0;
+    let nextCameraRestartAllowedAt = 0;
+    const CAMERA_BACKOFF_BASE_MS = 4000;  // 4 s, 8 s, 16 s, 32 s, 60 s ...
+    const CAMERA_BACKOFF_MAX_MS  = 60000;
+
+    // Consecutive inference timeouts — when this hits the threshold the
+    // MediaPipe runtime is presumed stuck (known failure mode on warm
+    // iPads) and we do a full subsystem re-init instead of hoping it
+    // recovers on its own.
+    let consecutiveTimeouts = 0;
+    const CONSECUTIVE_TIMEOUT_LIMIT = 5;
+    let isReiniting = false;            // re-entrancy guard for reinitModels
     
     let previousHandPositions = { left: null, right: null };
     let isInitialized = false;
@@ -118,6 +148,44 @@ const Segmentation = (function() {
     let frameCtx = null;
     let smallMaskCanvas = null;
     let smallMaskCtx = null;
+
+    // ==========================================
+    // Adaptive quality controller
+    // ==========================================
+
+    // Inspect the rolling inference-time window and nudge skipFrames
+    // up (lighten load) or down (raise quality) as needed. Called from
+    // handleFrame after each inference completes.
+    function adjustSkipFrames() {
+        const iter = inferenceIter;
+        if (iter - lastAdaptIter < ADAPT_COOLDOWN_ITERS) return;
+        const n = diagInferenceSamples.length;
+        if (n < 5) return;  // not enough data to decide
+
+        let sum = 0;
+        for (let i = 0; i < n; i++) sum += diagInferenceSamples[i];
+        const avg = sum / n;
+
+        const skip = CONFIG.processing.skipFrames;
+        let next = skip;
+        if (avg > TARGET_INFERENCE_MS * 1.5 && skip < MAX_SKIP_FRAMES) {
+            next = skip + 1;
+        } else if (avg < TARGET_INFERENCE_MS * 0.5 && skip > BASELINE_SKIP_FRAMES) {
+            next = skip - 1;
+        }
+        if (next !== skip) {
+            CONFIG.processing.skipFrames = next;
+            lastAdaptIter = iter;
+            console.log(
+                `[Mirror] Adaptive: skipFrames ${skip} → ${next} ` +
+                `(avg ${Math.round(avg)}ms, target ${TARGET_INFERENCE_MS}ms)`
+            );
+        } else {
+            // Update cooldown anchor even when we did not move, so we do
+            // not re-check every single inference.
+            lastAdaptIter = iter;
+        }
+    }
 
     // ==========================================
     // Initialization
@@ -188,10 +256,16 @@ const Segmentation = (function() {
                     }, INFERENCE_TIMEOUT);
                 })
             ]);
+            // Success — reset the consecutive-timeout counter.
+            consecutiveTimeouts = 0;
         } catch (_) {
             if (timedOut) {
                 diagTimeoutCount++;
-                console.warn(`[Mirror] inference timeout #${diagTimeoutCount} — device may be overloaded`);
+                consecutiveTimeouts++;
+                console.warn(
+                    `[Mirror] inference timeout #${diagTimeoutCount} ` +
+                    `(consecutive: ${consecutiveTimeouts}) — device may be overloaded`
+                );
             }
         } finally {
             if (timeoutId !== null) clearTimeout(timeoutId);
@@ -199,6 +273,17 @@ const Segmentation = (function() {
             if (diagInferenceSamples.length > 15) diagInferenceSamples.shift();
             isProcessing = false;
         }
+
+        // If MediaPipe has timed out enough times in a row, assume the
+        // WASM runtime is wedged and do a full models + camera re-init.
+        // Fire-and-forget; the re-entrancy guard inside reinitModels
+        // prevents overlap with the watchdog's camera restart.
+        if (consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_LIMIT && !isReiniting) {
+            reinitModels();
+        }
+
+        // Adaptive quality scaling (see adjustSkipFrames for thresholds).
+        adjustSkipFrames();
     }
 
     function updateCoverCrop() {
@@ -594,8 +679,10 @@ const Segmentation = (function() {
     function startWatchdog() {
         if (watchdogTimer) clearInterval(watchdogTimer);
         watchdogTimer = setInterval(async () => {
-            if (!isInitialized || isRestarting || document.hidden) return;
-            const stalledMs = performance.now() - lastFrameTimestamp;
+            if (!isInitialized || isRestarting || isReiniting || document.hidden) return;
+            const now = performance.now();
+            if (now < nextCameraRestartAllowedAt) return;  // still in backoff
+            const stalledMs = now - lastFrameTimestamp;
             if (stalledMs > WATCHDOG_STALL_MS) {
                 console.warn(`Camera stalled for ${Math.round(stalledMs)}ms — restarting...`);
                 await restartCamera();
@@ -625,12 +712,91 @@ const Segmentation = (function() {
 
             await camera.start();
             lastFrameTimestamp = performance.now();
+            cameraRestartFailures = 0;
+            nextCameraRestartAllowedAt = 0;
             console.log('Camera restarted successfully');
         } catch (err) {
-            console.error('Camera restart failed:', err);
+            cameraRestartFailures++;
+            // 4s → 8s → 16s → 32s → 60s (cap). Skip first multiplier so
+            // initial retry is snappy; only back off after repeated fails.
+            const backoff = Math.min(
+                CAMERA_BACKOFF_BASE_MS * Math.pow(2, cameraRestartFailures - 1),
+                CAMERA_BACKOFF_MAX_MS
+            );
+            nextCameraRestartAllowedAt = performance.now() + backoff;
+            console.error(
+                `Camera restart failed (attempt ${cameraRestartFailures}, ` +
+                `next retry in ${Math.round(backoff / 1000)}s):`, err
+            );
         } finally {
             isRestarting = false;
         }
+    }
+
+    // Full model re-init: tears down MediaPipe and rebuilds the same
+    // pipeline from scratch. Used when consecutive inference timeouts
+    // indicate the WASM runtime is wedged.
+    async function reinitModels() {
+        if (isReiniting) return;
+        isReiniting = true;
+        console.warn('[Mirror] Re-initializing MediaPipe models after persistent timeouts');
+        try {
+            // Stop the camera first so no new frames dispatch while we swap models
+            if (camera) { try { camera.stop(); } catch (_) {} }
+            isProcessing = false;
+            coverCrop = null;
+
+            // Close old model instances (ignore errors — they may already be stuck)
+            try { if (selfieSegmentation && selfieSegmentation.close) await selfieSegmentation.close(); } catch (_) {}
+            try { if (pose && pose.close) await pose.close(); } catch (_) {}
+
+            selfieSegmentation = new SelfieSegmentation({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+            });
+            selfieSegmentation.setOptions(CONFIG.segmentation);
+            selfieSegmentation.onResults(onSegmentationResults);
+            await selfieSegmentation.initialize();
+
+            pose = new Pose({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+            });
+            pose.setOptions(CONFIG.pose);
+            pose.onResults(onPoseResults);
+            await pose.initialize();
+
+            camera = new Camera(videoElement, {
+                onFrame: handleFrame,
+                width: canvasW,
+                height: canvasH,
+                facingMode: 'user'
+            });
+            await camera.start();
+
+            lastFrameTimestamp = performance.now();
+            consecutiveTimeouts = 0;
+            diagInferenceSamples.length = 0;
+            console.log('[Mirror] Models re-initialized successfully');
+        } catch (err) {
+            console.error('[Mirror] Model re-init failed:', err);
+        } finally {
+            isReiniting = false;
+        }
+    }
+
+    // Lightweight long-running hygiene — clears diagnostic history and
+    // adaptive-controller state so counters cannot drift unboundedly
+    // over multi-day runs. Does NOT touch models or camera.
+    function softReset() {
+        diagInferenceSamples.length = 0;
+        diagTimeoutCount = 0;
+        diagDroppedFrames = 0;
+        diagCamFrameCount = 0;
+        diagCamFps = 0;
+        diagCamFpsLastCheck = performance.now();
+        consecutiveTimeouts = 0;
+        cameraRestartFailures = 0;
+        nextCameraRestartAllowedAt = 0;
+        lastAdaptIter = inferenceIter;
     }
 
     function destroy() {
@@ -669,6 +835,7 @@ const Segmentation = (function() {
     return {
         init,
         resize,
+        softReset,
         getFrame,
         getMask,
         getErodedMask,

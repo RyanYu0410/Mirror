@@ -117,6 +117,21 @@ const Effects = (function() {
         backgroundTrailCount = 0;
     }
 
+    // Clear accumulated trail state without touching canvas sizes. Used
+    // by the long-running scheduled soft-reset so the installation can
+    // shed any slow drift in trail alpha without the visible reallocate.
+    function softReset() {
+        for (const slot of backgroundTrailFrames) {
+            slot.ctx.clearRect(0, 0, slot.canvas.width, slot.canvas.height);
+            slot.alpha = 0;
+            slot.active = false;
+        }
+        backgroundTrailHead = 0;
+        backgroundTrailCount = 0;
+        contourTrail.length = 0;
+        glitchActive = false;
+    }
+
     function setMode(mode) {
         currentMode = mode;
     }
@@ -739,6 +754,7 @@ const Effects = (function() {
     return {
         init,
         resize,
+        softReset,
         setMode,
         update,
         
