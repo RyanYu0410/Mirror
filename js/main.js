@@ -12,7 +12,10 @@ const AppConfig = {
         width: 1280,
         height: 720,
         pixelDensity: 1,
-        targetFPS: 30
+        // 24 fps is the common cinematic rate and cuts per-frame work
+        // (render + js + gpu) by ~20 % vs 30 fps. For a slow, meditative
+        // mirror piece the motion still reads as smooth.
+        targetFPS: 24
     },
     timing: {
         effectDuration: 45000,      // ms in EFFECT mode before auto-transition
@@ -504,25 +507,23 @@ function renderHumanFigure(ctx, frame, mask, contour, time) {
     humanCtx.globalAlpha = 0.3;
     humanCtx.fillRect(0, 0, w, h);
     
-    // 2. Mask Layer Mirroring (for human cutout)
-    // Minimal blur for edge anti-aliasing; mask erosion in segmentation handles most of the softening
-    humanCtx.filter = 'blur(0.5px)';
+    // 2. Mask Layer Mirroring (for human cutout).
+    // The mask is already softened by the erosion + downscale step in
+    // segmentation, so the previous 0.5 px canvas blur here was
+    // imperceptible — drop it to save a full-screen filter pass per frame.
     humanCtx.globalCompositeOperation = 'destination-in';
-    humanCtx.globalAlpha = 1.0; // Reset alpha for mask
+    humanCtx.globalAlpha = 1.0;
 
     if (AppConfig.mirror.mask !== AppConfig.mirror.video) {
-        // If they differ, we need to flip back/forth
         humanCtx.save();
         humanCtx.translate(w, 0);
         humanCtx.scale(-1, 1);
-        humanCtx.drawImage(mask, 0, 0, w, h); // Use original mask with smoothing
+        humanCtx.drawImage(mask, 0, 0, w, h);
         humanCtx.restore();
     } else {
-        humanCtx.drawImage(mask, 0, 0, w, h); // Use original mask with smoothing
+        humanCtx.drawImage(mask, 0, 0, w, h);
     }
 
-    // Reset filter and composite operation
-    humanCtx.filter = 'none';
     humanCtx.globalCompositeOperation = 'source-over';
     
     humanCtx.restore();

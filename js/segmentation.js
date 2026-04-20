@@ -24,15 +24,22 @@ const Segmentation = (function() {
             selfieMode: true
         },
         pose: {
-            modelComplexity: 1, // 1 = full (better accuracy)
+            // 0 = lite (≈2–3× faster than full); wrist/finger tracking is
+            // still accurate enough for text-trigger positions and the
+            // 0.3-lerp velocity smoothing absorbs the extra jitter.
+            modelComplexity: 0,
             smoothLandmarks: true,
             enableSegmentation: false,
             smoothSegmentation: false,
-            minDetectionConfidence: 0.7,  // Higher threshold
-            minTrackingConfidence: 0.7    // Higher threshold
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
         },
         processing: {
-            skipFrames: 0,  // Process every frame for smoother results
+            // 1 = run inference on every other camera frame.
+            // Camera display still updates every frame, so the live video
+            // stays smooth — only the mask / hand-landmark update rate
+            // halves, which is imperceptible for this art piece.
+            skipFrames: 1,
             maskScale: 0.5  // Half-res for mask processing: masks are inherently blurry,
                             // half-res costs 1/4 the RAM and speeds up getImageData/contour scan
         },
