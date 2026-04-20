@@ -90,6 +90,10 @@ const Segmentation = (function() {
     let isInitialized = false;
     let isProcessing = false;
     let frameCount = 0;
+    // Count of inference iterations actually dispatched (not camera frames).
+    // Used to run pose at half the segmentation rate — hand positions only
+    // drive text-spawn locations, so ~80 ms of extra latency is imperceptible.
+    let inferenceIter = 0;
     let onReadyCallback = null;
     let onErrorCallback = null;
     let onProgressCallback = null;
@@ -157,17 +161,26 @@ const Segmentation = (function() {
         if (frameCount % (CONFIG.processing.skipFrames + 1) !== 0) return;
 
         isProcessing = true;
+        inferenceIter++;
         const inferenceStart = performance.now();
         let timeoutId = null;
         let timedOut = false;
         // Shorter timeout on mobile — we want to detect thermal throttling quickly
         const INFERENCE_TIMEOUT = IS_MOBILE ? 3000 : 5000;
+
+        // Run pose only on every other inference pass; segmentation still
+        // runs every pass since it drives the visible mask.
+        const runPose = (inferenceIter & 1) === 0;
+        const workload = runPose
+            ? Promise.all([
+                selfieSegmentation.send({ image: videoElement }),
+                pose.send({ image: videoElement })
+              ])
+            : selfieSegmentation.send({ image: videoElement });
+
         try {
             await Promise.race([
-                Promise.all([
-                    selfieSegmentation.send({ image: videoElement }),
-                    pose.send({ image: videoElement })
-                ]),
+                workload,
                 new Promise((_, reject) => {
                     timeoutId = setTimeout(() => {
                         timedOut = true;
@@ -460,7 +473,10 @@ const Segmentation = (function() {
         const data = smallMaskCtx.getImageData(0, 0, w, h).data;
         
         const points = [];
-        const step = 3; // Sample every N pixels
+        // step 5 means ~2.8× fewer pixel reads than step 3; the resulting
+        // contour is slightly coarser but downstream only uses it to pick
+        // random spawn positions for text, so the difference is invisible.
+        const step = 5;
         const threshold = 100;
         
         // Scan for edge pixels

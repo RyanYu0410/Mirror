@@ -12,10 +12,10 @@ const AppConfig = {
         width: 1280,
         height: 720,
         pixelDensity: 1,
-        // 24 fps is the common cinematic rate and cuts per-frame work
-        // (render + js + gpu) by ~20 % vs 30 fps. For a slow, meditative
-        // mirror piece the motion still reads as smooth.
-        targetFPS: 24
+        // 20 fps: ~17 % less work than 24 fps. For a slow meditative
+        // mirror the motion still reads as fluid; below this the live
+        // video feed starts to feel stuttery during quick hand moves.
+        targetFPS: 20
     },
     timing: {
         effectDuration: 45000,      // ms in EFFECT mode before auto-transition
@@ -244,7 +244,8 @@ async function initSegmentation() {
         //   2. Caps total pixels at a device-appropriate budget
         //
         // Target pixel budget (area):
-        //   Mobile  → 640×480 = 307 200 px  (fits any mobile/tablet at ~half-res)
+        //   Mobile  → 480×360 = 172 800 px  (phones throttle fast; this is
+        //             still above MediaPipe's internal 256-px model input)
         //   Desktop → 1280×720 = 921 600 px  (cap at 720p to avoid over-allocating on 4K)
         //
         // Formula: given target area T and screen ratio R = W/H
@@ -254,7 +255,7 @@ async function initSegmentation() {
         const W = AppConfig.canvas.width;
         const H = AppConfig.canvas.height;
         const ratio = W / H;
-        const TARGET_PIXELS = isMobile ? 640 * 480 : 1280 * 720;
+        const TARGET_PIXELS = isMobile ? 480 * 360 : 1280 * 720;
         const procHeight = Math.min(H, Math.round(Math.sqrt(TARGET_PIXELS / ratio)));
         const procWidth  = Math.min(W, Math.round(procHeight * ratio));
 

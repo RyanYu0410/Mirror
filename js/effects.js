@@ -382,9 +382,11 @@ const Effects = (function() {
     let blackMaskCtx = null;
 
     // Background trail for motion blur effect - ring buffer of pre-allocated canvases.
-    // 4 slots is the sweet spot: keeps ~3 visible ghost frames while halving RAM vs 8.
-    const MAX_BACKGROUND_TRAIL = 4;
-    const BACKGROUND_TRAIL_FADE = 0.75; // faster fade so trail still dissolves in ~4 frames
+    // 3 slots saves one full-screen canvas of RAM and 25 % of the per-frame
+    // trail copy/draw work. Fade is tuned up slightly so the visible trail
+    // length stays roughly the same as the old 4-slot ring buffer.
+    const MAX_BACKGROUND_TRAIL = 3;
+    const BACKGROUND_TRAIL_FADE = 0.70;
     let backgroundTrailFrames = []; // array of { canvas, ctx, alpha, active }
     let backgroundTrailHead = 0;   // index of the next slot to write into
     let backgroundTrailCount = 0;  // how many slots currently hold live frames
