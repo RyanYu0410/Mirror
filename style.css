@@ -66,6 +66,19 @@ html, body {
     visibility: hidden;
 }
 
+/* Silent reload: the watchdog reloaded us after a freeze. We still
+   want a solid black cover so the p5 canvas can boot behind it, but
+   we hide every visual element of the loading screen so the user
+   just sees the same black frame they were already looking at.
+   The subsequent .fade-out still removes the cover, now revealing
+   the live mirror — reads as an instant recovery. */
+html.silent-reload .loading-content {
+    display: none;
+}
+html.silent-reload #instructions {
+    display: none !important;
+}
+
 .loading-content {
     text-align: center;
     max-width: 400px;

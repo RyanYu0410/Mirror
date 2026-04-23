@@ -199,6 +199,10 @@ function triggerReload(reason) {
     installReloading = true;
     console.warn(`[Mirror] Installation watchdog reloading: ${reason}`);
     try { if (wakeLockSentinel) wakeLockSentinel.release(); } catch (_) {}
+    // Mark this reload as "silent" so the next page load suppresses the
+    // loading screen UI (see index.html + .silent-reload in style.css).
+    // To the viewer the freeze just ends.
+    try { sessionStorage.setItem('mirror.silentReload', '1'); } catch (_) {}
     // Small delay gives the warn log a chance to flush to devtools before
     // the page goes away; 250 ms is imperceptible for an installation.
     setTimeout(() => {
@@ -724,6 +728,8 @@ function maybeScheduledReset() {
     // Hard reload has priority — it supersedes soft reset for that cycle.
     if (cfg.hardReloadIntervalMs > 0 && uptime >= cfg.hardReloadIntervalMs) {
         console.log(`[Mirror] Scheduled hard reload after ${Math.round(uptime / 3600000)}h uptime`);
+        // Silent reload: skip the loading screen on the way back in.
+        try { sessionStorage.setItem('mirror.silentReload', '1'); } catch (_) {}
         // Give the TRANSITION fade ~1s to paint, then reload.
         setTimeout(() => location.reload(), 1000);
         return;

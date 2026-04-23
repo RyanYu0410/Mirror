@@ -12,6 +12,26 @@
     
     <!-- Styles -->
     <link rel="stylesheet" href="style.css">
+
+    <!-- Silent-reload marker. When the installation watchdog (or a
+         scheduled reload) reloads the page it stashes a flag in
+         sessionStorage. We pick it up *before* any content paints and
+         mark <html>, so the CSS below suppresses the loading screen UI
+         and the page just stays black until the mirror canvas comes
+         back. The result reads as "frozen → recovered" instead of
+         "frozen → reload screen → recovered". The flag is consumed
+         immediately so a user-initiated refresh still shows the
+         normal loading screen. -->
+    <script>
+        (function () {
+            try {
+                if (sessionStorage.getItem('mirror.silentReload') === '1') {
+                    sessionStorage.removeItem('mirror.silentReload');
+                    document.documentElement.classList.add('silent-reload');
+                }
+            } catch (_) { /* private mode, storage disabled, etc. */ }
+        })();
+    </script>
     
     <!-- External runtimes — self-hosted under ./vendor/ so the install keeps
          working on air-gapped networks and across CDN outages. Refresh with
